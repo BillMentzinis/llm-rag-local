@@ -1,0 +1,25 @@
+# Vector database — large binaries, user-specific content
+chroma_db/
+
+# Legacy scripts — kept local only
+old/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Transient file uploads
+temp_uploads/
+
+# Secrets
+.env
+
+# Packaging artifacts
+*.egg-info/
+dist/
+build/
+
+# OS noise
+.DS_Store
+Thumbs.db
