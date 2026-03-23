@@ -142,7 +142,7 @@ def render_sidebar(pipeline: RAGPipeline):
                     "Chunks": doc["chunk_count"]
                 })
 
-            st.dataframe(doc_data, use_container_width=True, hide_index=True)
+            st.dataframe(doc_data, width='stretch', hide_index=True)
 
             # Document actions
             with st.expander("Document Actions"):
