@@ -19,6 +19,41 @@ MODEL_CONFIG = {
     "trust_remote_code": True,
 }
 
+# Available LLMs for the model selector
+_QUANT = MODEL_CONFIG["quantization"]
+AVAILABLE_MODELS = {
+    "meta-llama/Llama-3.1-8B-Instruct": {
+        "display_name": "Llama 3.1 8B (default, ~4GB)",
+        "quantization": _QUANT,
+        "device_map": "auto",
+        "trust_remote_code": True,
+    },
+    "meta-llama/Llama-3.2-3B-Instruct": {
+        "display_name": "Llama 3.2 3B (~2GB)",
+        "quantization": _QUANT,
+        "device_map": "auto",
+        "trust_remote_code": True,
+    },
+    "Qwen/Qwen2.5-7B-Instruct": {
+        "display_name": "Qwen 2.5 7B (~4GB)",
+        "quantization": _QUANT,
+        "device_map": "auto",
+        "trust_remote_code": True,
+    },
+    "microsoft/Phi-3.5-mini-instruct": {
+        "display_name": "Phi-3.5 Mini 3.8B (~2GB)",
+        "quantization": _QUANT,
+        "device_map": "auto",
+        "trust_remote_code": True,
+    },
+    "microsoft/phi-4": {
+        "display_name": "Phi-4 14B (~8GB, large GPU)",
+        "quantization": _QUANT,
+        "device_map": "auto",
+        "trust_remote_code": True,
+    },
+}
+
 # RAG Configuration
 RAG_CONFIG = {
     "chunk_size": 512,  # Tokens per chunk
@@ -78,6 +113,7 @@ FILE_CONFIG = {
 PATHS = {
     "chroma_db": os.path.join(os.path.dirname(__file__), "chroma_db"),
     "temp_uploads": os.path.join(os.path.dirname(__file__), "temp_uploads"),
+    "chats": os.path.join(os.path.dirname(__file__), "chats"),
 }
 
 # RAG Prompt Template

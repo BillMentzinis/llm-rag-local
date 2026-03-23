@@ -10,11 +10,12 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
 from config import (
     MODEL_CONFIG, GENERATION_CONFIG, RAG_GENERATION_CONFIG,
-    UI_CONFIG, RAG_CONFIG, SUPPORTED_EXTENSIONS
+    UI_CONFIG, RAG_CONFIG, SUPPORTED_EXTENSIONS, AVAILABLE_MODELS
 )
 from rag_pipeline import RAGPipeline
 from vector_store_manager import VectorStoreManager
 from document_processor import DocumentProcessor
+from chat_manager import save_chat, load_chat, list_chats, delete_chat, auto_name_from_message
 
 
 # Page configuration
@@ -27,39 +28,41 @@ st.set_page_config(
 
 
 @st.cache_resource
-def load_model_and_tokenizer():
+def load_model_and_tokenizer(model_name: str):
     """
-    Load model and tokenizer (cached to avoid reloading).
+    Load model and tokenizer (cached per model_name to avoid reloading).
     """
-    with st.spinner("Loading Llama 3.1 8B model... This may take a minute."):
+    cfg = AVAILABLE_MODELS[model_name]
+    with st.spinner(f"Loading {cfg['display_name']}... This may take a minute."):
         # Configure quantization
-        bnb_config = BitsAndBytesConfig(**MODEL_CONFIG["quantization"])
+        bnb_config = BitsAndBytesConfig(**cfg["quantization"])
 
         # Load tokenizer
         tokenizer = AutoTokenizer.from_pretrained(
-            MODEL_CONFIG["name"],
-            trust_remote_code=MODEL_CONFIG["trust_remote_code"]
+            model_name,
+            trust_remote_code=cfg["trust_remote_code"]
         )
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
         # Load model
         model = AutoModelForCausalLM.from_pretrained(
-            MODEL_CONFIG["name"],
+            model_name,
             quantization_config=bnb_config,
-            device_map=MODEL_CONFIG["device_map"],
-            trust_remote_code=MODEL_CONFIG["trust_remote_code"]
+            device_map=cfg["device_map"],
+            trust_remote_code=cfg["trust_remote_code"]
         )
 
         return model, tokenizer
 
 
 @st.cache_resource
-def initialize_rag_pipeline(_model, _tokenizer):
+def initialize_rag_pipeline(model_name: str, _model, _tokenizer):
     """
-    Initialize RAG pipeline components (cached).
+    Initialize RAG pipeline components (cached per model_name).
 
     Args:
+        model_name: Model ID string used as cache key
         _model: Model instance (underscore prefix prevents hashing)
         _tokenizer: Tokenizer instance
 
@@ -102,6 +105,12 @@ def initialize_session_state():
     if "document_summaries" not in st.session_state:
         st.session_state.document_summaries = {}
 
+    if "current_chat_name" not in st.session_state:
+        st.session_state.current_chat_name = None
+
+    if "selected_model" not in st.session_state:
+        st.session_state.selected_model = "meta-llama/Llama-3.1-8B-Instruct"
+
 
 def render_sidebar(pipeline: RAGPipeline):
     """
@@ -111,6 +120,24 @@ def render_sidebar(pipeline: RAGPipeline):
         pipeline: RAG pipeline instance
     """
     with st.sidebar:
+        # Model selector
+        st.subheader("Model")
+        model_keys = list(AVAILABLE_MODELS.keys())
+        display_names = [AVAILABLE_MODELS[m]["display_name"] for m in model_keys]
+        current_idx = model_keys.index(st.session_state.selected_model)
+        chosen_display = st.selectbox(
+            "LLM Model",
+            options=display_names,
+            index=current_idx,
+            help="Switching models clears the cache and reloads the model."
+        )
+        chosen_model = model_keys[display_names.index(chosen_display)]
+        if chosen_model != st.session_state.selected_model:
+            st.session_state.selected_model = chosen_model
+            st.cache_resource.clear()
+            st.rerun()
+
+        st.divider()
         st.title("Document Management")
 
         # File uploader
@@ -230,6 +257,65 @@ def render_sidebar(pipeline: RAGPipeline):
                 step=50,
                 help="Maximum length of response"
             )
+
+        st.divider()
+
+        # Chat history
+        st.subheader("Chat History")
+
+        col_new, col_save = st.columns(2)
+        with col_new:
+            if st.button("New Chat", type="secondary", use_container_width=False):
+                if st.session_state.messages:
+                    name = st.session_state.current_chat_name
+                    if name is None:
+                        first_user = next(
+                            (m["content"] for m in st.session_state.messages if m["role"] == "user"),
+                            None
+                        )
+                        name = auto_name_from_message(first_user) if first_user else \
+                               datetime.now().strftime("Chat_%Y%m%d_%H%M%S")
+                    save_chat(name, st.session_state.messages)
+                st.session_state.messages = []
+                st.session_state.current_chat_name = None
+                st.rerun()
+
+        with col_save:
+            if st.session_state.messages:
+                if st.button("Save Chat", type="primary", use_container_width=False):
+                    name = st.session_state.current_chat_name
+                    if name is None:
+                        first_user = next(
+                            (m["content"] for m in st.session_state.messages if m["role"] == "user"),
+                            None
+                        )
+                        name = auto_name_from_message(first_user) if first_user else \
+                               datetime.now().strftime("Chat_%Y%m%d_%H%M%S")
+                        st.session_state.current_chat_name = name
+                    save_chat(name, st.session_state.messages)
+                    st.success(f"Saved: {name}")
+
+        saved = list_chats()
+        if saved:
+            with st.expander(f"Saved Chats ({len(saved)})", expanded=False):
+                for chat in saved:
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        label = f"{chat['name']} ({chat['message_count']} msgs)"
+                        if st.button(label, key=f"load_{chat['filepath']}"):
+                            loaded = load_chat(chat["filepath"])
+                            if loaded is not None:
+                                st.session_state.messages = loaded
+                                st.session_state.current_chat_name = chat["name"]
+                                st.rerun()
+                            else:
+                                st.error("Could not load chat.")
+                    with col2:
+                        if st.button("X", key=f"del_{chat['filepath']}"):
+                            delete_chat(chat["filepath"])
+                            if st.session_state.current_chat_name == chat["name"]:
+                                st.session_state.current_chat_name = None
+                            st.rerun()
 
 
 def summarize_document(filename: str, pipeline: RAGPipeline):
@@ -355,7 +441,8 @@ def render_chat_interface(pipeline: RAGPipeline):
     Args:
         pipeline: RAG pipeline instance
     """
-    st.title("Llama 3.1 8B Chat with RAG")
+    model_display = AVAILABLE_MODELS[st.session_state.selected_model]["display_name"]
+    st.title(f"{model_display} Chat with RAG")
 
     # Display RAG status
     if st.session_state.rag_enabled and not pipeline.vector_store.is_empty():
@@ -485,8 +572,8 @@ def main():
 
     # Load model and pipeline
     try:
-        model, tokenizer = load_model_and_tokenizer()
-        pipeline = initialize_rag_pipeline(model, tokenizer)
+        model, tokenizer = load_model_and_tokenizer(st.session_state.selected_model)
+        pipeline = initialize_rag_pipeline(st.session_state.selected_model, model, tokenizer)
     except Exception as e:
         st.error(f"Failed to initialize application: {str(e)}")
         st.stop()
@@ -497,7 +584,7 @@ def main():
 
     # Footer
     st.sidebar.divider()
-    st.sidebar.caption("Llama 3.2 3B with RAG | Powered by Streamlit")
+    st.sidebar.caption("Local LLM with RAG | Powered by Streamlit")
 
 
 if __name__ == "__main__":
