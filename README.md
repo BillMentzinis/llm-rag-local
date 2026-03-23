@@ -3,7 +3,7 @@
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-A local Retrieval-Augmented Generation (RAG) chat application powered by **Llama 3.1 8B Instruct** with a Streamlit UI. Runs entirely on your machine — no cloud API keys required.
+A local Retrieval-Augmented Generation (RAG) chat application with a Streamlit UI. Runs entirely on your machine — no cloud API keys required.
 
 ## Quick Start
 
@@ -16,27 +16,41 @@ conda activate llm-local
 streamlit run streamlit_app.py
 ```
 
-The app opens at `http://localhost:8501`. On first run it will download the embedding model (~90 MB).
+The app opens at `http://localhost:8501`. On first run it downloads the embedding model (~90 MB). LLM weights are downloaded from Hugging Face on first use and cached at `~/.cache/huggingface/hub/`.
 
-> **Note:** You need a Hugging Face account with access to `meta-llama/Llama-3.1-8B-Instruct`. Log in with `huggingface-cli login` before starting.
+> **Note:** Models gated on Hugging Face (e.g. Llama) require an account with access. Log in with `huggingface-cli login` before starting.
 
 ---
 
 ## Features
 
-- Chat interface with Llama 3.1 8B Instruct (4-bit quantized, ~4 GB VRAM)
+- Multi-model support — switch LLMs from the sidebar without restarting
+- Chat interface with 4-bit quantized models (~2–8 GB VRAM depending on model)
 - RAG support: upload documents and get cited, grounded answers
+- Chat history: save, load, and delete named chat sessions (stored as JSON)
 - Supported file types: PDF, TXT, MD, and common code files
-- Document management: upload, index, delete, view stats
+- Document management: upload, index, summarize, delete, view stats
 - Persistent vector storage with ChromaDB
 - Configurable generation and retrieval parameters
+
+## Available Models
+
+| Model | Display Name | VRAM (4-bit) | Notes |
+|-------|-------------|--------------|-------|
+| `meta-llama/Llama-3.1-8B-Instruct` | Llama 3.1 8B | ~4 GB | Default |
+| `meta-llama/Llama-3.2-3B-Instruct` | Llama 3.2 3B | ~2 GB | Faster, newer |
+| `Qwen/Qwen2.5-7B-Instruct` | Qwen 2.5 7B | ~4 GB | Strong quality |
+| `microsoft/Phi-3.5-mini-instruct` | Phi-3.5 Mini 3.8B | ~2 GB | Fast, efficient |
+| `microsoft/phi-4` | Phi-4 14B | ~8 GB | Needs larger GPU |
+
+Switch models using the **Model** selector at the top of the sidebar. Switching clears the model cache and reloads — documents and chat history are unaffected.
 
 ## Architecture
 
 | Component | Technology |
 |-----------|------------|
 | UI | Streamlit |
-| LLM | Llama 3.1 8B Instruct (4-bit via bitsandbytes) |
+| LLM | Configurable (see table above), 4-bit via bitsandbytes |
 | Vector DB | ChromaDB |
 | Embeddings | sentence-transformers `all-MiniLM-L6-v2` |
 | PDF parsing | PyMuPDF |
@@ -49,8 +63,10 @@ LLM/
 ├── rag_pipeline.py         # RAG orchestration
 ├── document_processor.py   # File parsing and chunking
 ├── vector_store_manager.py # ChromaDB operations
+├── chat_manager.py         # Chat save/load/delete helpers
 ├── config.py               # All configuration parameters
 ├── environment.yml         # Conda environment
+├── chats/                  # Saved chat sessions (auto-created, gitignored)
 └── chroma_db/              # Vector database (auto-created, gitignored)
 ```
 
@@ -68,11 +84,18 @@ LLM/
 2. **Enable RAG** — ensure "Enable RAG" is checked
 3. **Ask questions** — the model retrieves relevant chunks and cites sources
 
+### Chat History
+
+- **Save Chat** — saves the current conversation to `chats/` named after your first message
+- **New Chat** — auto-saves the current conversation and starts a fresh session
+- **Saved Chats** expander — lists all saved sessions; click a name to load, click **X** to delete
+
 ### Adjusting Settings
 
 | Setting | Description |
 |---------|-------------|
-| Context Chunks | Number of document chunks to retrieve (1–10) |
+| Model | Select which LLM to use |
+| Context Chunks | Number of document chunks to retrieve (1-10) |
 | Temperature | Response randomness (0.1 = focused, 2.0 = creative) |
 | Max Tokens | Maximum response length |
 
@@ -82,6 +105,7 @@ All parameters are in `config.py`:
 
 - **RAG**: `chunk_size` (512 tokens), `chunk_overlap` (50), `top_k` (3), `min_similarity` (0.5)
 - **Generation**: `temperature` (0.7), `top_p` (0.9), `max_new_tokens` (512)
+- **Models**: `AVAILABLE_MODELS` dict — add or remove models here
 
 ## Supported File Types
 
@@ -90,17 +114,21 @@ All parameters are in `config.py`:
 
 ## Performance
 
-- **VRAM:** ~4 GB (model at 4-bit + embeddings)
-- **First run:** Slow (downloads embedding model)
-- **Retrieval:** <100 ms
-- **Generation:** ~20–30 tokens/second (GPU-dependent)
+| Metric | Value |
+|--------|-------|
+| VRAM (default model) | ~4 GB |
+| First run | Slow (downloads model weights) |
+| Retrieval | <100 ms |
+| Generation | ~20-30 tokens/second (GPU-dependent) |
 
 ## Troubleshooting
 
-**Model loads slowly** — expected on first run; subsequent loads are faster.
+**Model loads slowly** — expected on first run; subsequent loads use the local cache.
 
-**Poor retrieval quality** — increase `top_k` in `config.py` or the sidebar, and ensure uploaded documents are relevant.
+**Switching models uses a lot of VRAM** — the old model is evicted from cache when you switch. If you run out of memory, restart the app.
 
-**Out of memory** — reduce `max_new_tokens`, close other GPU apps.
+**Poor retrieval quality** — increase `top_k` in the sidebar, or lower `min_similarity` in `config.py`.
+
+**Out of memory** — reduce `max_new_tokens`, close other GPU apps, or switch to a smaller model.
 
 **Document processing fails** — check file format is supported and size is <10 MB.
