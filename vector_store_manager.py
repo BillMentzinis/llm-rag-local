@@ -67,19 +67,19 @@ class VectorStoreManager:
         embeddings = self.embedding_model.encode(texts, show_progress_bar=False)
         return embeddings.tolist()
 
-    def _generate_chunk_id(self, filename: str, chunk_index: int) -> str:
+    def _generate_chunk_id(self, file_path: str, chunk_index: int) -> str:
         """
         Generate unique ID for a chunk.
 
         Args:
-            filename: Source filename
+            file_path: Full source file path (used to avoid collisions between
+                       files with the same name from different directories)
             chunk_index: Index of chunk
 
         Returns:
             Unique chunk ID
         """
-        # Create hash of filename for uniqueness
-        file_hash = hashlib.md5(filename.encode()).hexdigest()[:8]
+        file_hash = hashlib.md5(file_path.encode()).hexdigest()[:8]
         return f"{file_hash}_{chunk_index}"
 
     def add_documents(self, chunks: List[Dict], batch_size: int = 100) -> int:
@@ -103,7 +103,7 @@ class VectorStoreManager:
 
         for chunk in chunks:
             chunk_id = self._generate_chunk_id(
-                chunk.get("filename", "unknown"),
+                chunk.get("file_path", chunk.get("filename", "unknown")),
                 chunk.get("chunk_index", 0)
             )
 
