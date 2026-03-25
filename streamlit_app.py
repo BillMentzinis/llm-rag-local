@@ -547,6 +547,13 @@ def generate_response(prompt: str, pipeline: RAGPipeline) -> dict:
         # Filter by document if specified
         if filter_metadata:
             context_chunks = [c for c in context_chunks if c["metadata"]["filename"] == filter_metadata["filename"]]
+            if not context_chunks:
+                st.warning(f"No relevant chunks found in '{st.session_state.selected_document}'. Searching all documents.")
+                context_chunks = pipeline.retrieve_context(
+                    query=prompt,
+                    top_k=st.session_state.top_k,
+                    min_similarity=None
+                )
 
         # Generate with context
         result = pipeline.generate_response(
