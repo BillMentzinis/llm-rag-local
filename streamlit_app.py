@@ -263,6 +263,7 @@ def render_sidebar(pipeline: RAGPipeline):
 
         # Chat history
         st.subheader("Chat History")
+        st.caption("Only the last 3 conversation turns are sent as context.")
 
         col_new, col_save = st.columns(2)
         with col_new:
