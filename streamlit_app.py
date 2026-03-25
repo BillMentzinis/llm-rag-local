@@ -135,6 +135,7 @@ def render_sidebar(pipeline: RAGPipeline):
         if chosen_model != st.session_state.selected_model:
             st.session_state.selected_model = chosen_model
             st.cache_resource.clear()
+            torch.cuda.empty_cache()
             st.rerun()
 
         st.divider()
