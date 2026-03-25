@@ -25,7 +25,6 @@ dependencies:
     - ipywidgets
     - sentence-transformers
     - chromadb
-    - gradio
     - streamlit
     - pymupdf
     - tiktoken

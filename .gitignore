@@ -12,6 +12,9 @@ __pycache__/
 # Transient file uploads
 temp_uploads/
 
+# Saved chat sessions — personal, not for sharing
+chats/
+
 # Secrets
 .env
 

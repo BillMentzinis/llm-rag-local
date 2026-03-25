@@ -132,7 +132,7 @@ SYSTEM_PROMPT = """You are a helpful AI assistant. Provide clear, accurate, and 
 
 # Streamlit UI Configuration
 UI_CONFIG = {
-    "page_title": "Llama 3.1 8B with RAG",
+    "page_title": "Local LLM with RAG",
     "page_icon": "🦙",
     "layout": "wide",
     "initial_sidebar_state": "expanded",
