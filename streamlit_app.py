@@ -85,7 +85,7 @@ def initialize_session_state():
         st.session_state.messages = []
 
     if "rag_enabled" not in st.session_state:
-        st.session_state.rag_enabled = True
+        st.session_state.rag_enabled = False
 
     if "top_k" not in st.session_state:
         st.session_state.top_k = RAG_CONFIG["top_k"]
