@@ -7,7 +7,7 @@ from rag_pipeline import RAGPipeline
 @pytest.fixture
 def pipeline(store):
     # Retrieval and ingestion don't touch the model, so none is loaded
-    return RAGPipeline(model=None, tokenizer=None, vector_store=store,
+    return RAGPipeline(None, vector_store=store,
                        doc_processor=DocumentProcessor(chunk_size=16, chunk_overlap=2))
 
 
@@ -47,7 +47,7 @@ def test_changed_chunk_settings_rechunk_an_unchanged_file(pipeline, store, tmp_p
     path = _write(tmp_path, "notes.txt", long_text)
     first = pipeline.ingest_document(path)
 
-    rechunking = RAGPipeline(model=None, tokenizer=None, vector_store=store,
+    rechunking = RAGPipeline(None, vector_store=store,
                              doc_processor=DocumentProcessor(chunk_size=64, chunk_overlap=8))
     second = rechunking.ingest_document(path)
 

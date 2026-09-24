@@ -1,29 +1,43 @@
 """
-Configuration file for RAG-enabled Llama 3.1 8B Streamlit application.
+Configuration file for the local RAG chat application.
 Centralizes all configuration parameters for easy tuning.
 """
 
 import os
-import torch
 
-# Model Configuration
+# Model used on first launch: "transformers:<Hugging Face id>" to run a model
+# in-process (needs an NVIDIA GPU), or "ollama:<model name>" to use a local
+# Ollama server. Override with the LLM_MODEL environment variable, e.g.
+#   LLM_MODEL=ollama:llama3.1:8b streamlit run streamlit_app.py
+# If this is a Hugging Face model but there's no NVIDIA GPU and Ollama is
+# running, the app starts on the first Ollama model instead.
+DEFAULT_MODEL = os.environ.get("LLM_MODEL", "transformers:meta-llama/Llama-3.1-8B-Instruct")
+
+# Ollama server (https://ollama.com). Its models are listed in the model picker
+# while it's running.
+OLLAMA_CONFIG = {
+    "host": os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+    "list_timeout": 1.0,  # Seconds to wait when checking which models it has
+}
+
+# Model Configuration (Hugging Face models run in-process)
 MODEL_CONFIG = {
     "name": "meta-llama/Llama-3.1-8B-Instruct",
     "quantization": {
         "load_in_4bit": True,
         "bnb_4bit_quant_type": "nf4",
-        "bnb_4bit_compute_dtype": torch.float16,
+        "bnb_4bit_compute_dtype": "float16",
         "bnb_4bit_use_double_quant": True,
     },
     "device_map": "auto",
     "trust_remote_code": True,
 }
 
-# Available LLMs for the model selector
+# Hugging Face models offered in the model selector (4-bit, NVIDIA GPU)
 _QUANT = MODEL_CONFIG["quantization"]
 AVAILABLE_MODELS = {
     "meta-llama/Llama-3.1-8B-Instruct": {
-        "display_name": "Llama 3.1 8B (default, ~4GB)",
+        "display_name": "Llama 3.1 8B (~4GB)",
         "quantization": _QUANT,
         "device_map": "auto",
         "trust_remote_code": True,

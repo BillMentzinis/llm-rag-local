@@ -1,5 +1,5 @@
 """
-Streamlit UI for RAG-Enabled Llama 3.2 3B Chat Application.
+Streamlit UI for the local RAG chat application.
 """
 
 import os
@@ -8,14 +8,16 @@ import itertools
 import tempfile
 import streamlit as st
 import streamlit.components.v1 as components
-import torch
 from datetime import datetime
 from typing import Optional
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
 from config import (
-    MODEL_CONFIG, GENERATION_CONFIG, RAG_GENERATION_CONFIG,
-    UI_CONFIG, RAG_CONFIG, SUPPORTED_EXTENSIONS, AVAILABLE_MODELS
+    GENERATION_CONFIG, UI_CONFIG, RAG_CONFIG, SUPPORTED_EXTENSIONS, AVAILABLE_MODELS,
+    DEFAULT_MODEL, OLLAMA_CONFIG
+)
+from llm_backends import (
+    LLMBackend, OLLAMA_PREFIX, TRANSFORMERS_PREFIX, load_backend, release_all,
+    list_ollama_models, model_label, short_label, default_model_key, cuda_available
 )
 from rag_pipeline import RAGPipeline
 from vector_store_manager import VectorStoreManager
@@ -92,54 +94,33 @@ st.set_page_config(
 )
 
 
-@st.cache_resource
-def load_model_and_tokenizer(model_name: str):
+@st.cache_resource(show_spinner=False)
+def load_llm(model_key: str) -> LLMBackend:
     """
-    Load model and tokenizer (cached per model_name to avoid reloading).
-    """
-    cfg = AVAILABLE_MODELS[model_name]
-    with st.spinner(f"Loading {cfg['display_name']}... This may take a minute."):
-        # Configure quantization
-        bnb_config = BitsAndBytesConfig(**cfg["quantization"])
-
-        # Load tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
-            trust_remote_code=cfg["trust_remote_code"]
-        )
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-
-        # Load model
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            quantization_config=bnb_config,
-            device_map=cfg["device_map"],
-            trust_remote_code=cfg["trust_remote_code"]
-        )
-
-        return model, tokenizer
-
-
-@st.cache_resource
-def initialize_rag_pipeline(model_name: str, _model, _tokenizer):
-    """
-    Initialize RAG pipeline components (cached per model_name).
+    Load a model (cached per model key).
 
     Args:
-        model_name: Model ID string used as cache key
-        _model: Model instance (underscore prefix prevents hashing)
-        _tokenizer: Tokenizer instance
+        model_key: "transformers:<Hugging Face id>" or "ollama:<model name>"
+    """
+    with st.spinner(f"Loading {model_label(model_key)}... This may take a minute."):
+        return load_backend(model_key)
+
+
+@st.cache_resource(show_spinner="Loading the document index...")
+def load_retrieval():
+    """
+    Load the vector store and document processor (cached; independent of the model).
 
     Returns:
-        RAGPipeline instance
+        Tuple of (VectorStoreManager, DocumentProcessor)
     """
-    with st.spinner("Initializing RAG pipeline..."):
-        vector_store = VectorStoreManager()
-        doc_processor = DocumentProcessor()
-        pipeline = RAGPipeline(_model, _tokenizer, vector_store, doc_processor)
+    return VectorStoreManager(), DocumentProcessor()
 
-        return pipeline
+
+@st.cache_data(ttl=10, show_spinner=False)
+def available_ollama_models() -> list:
+    """Models the local Ollama server has (checked at most every 10 seconds)."""
+    return list_ollama_models()
 
 
 def initialize_session_state():
@@ -171,7 +152,7 @@ def initialize_session_state():
         st.session_state.current_chat_name = None
 
     if "selected_model" not in st.session_state:
-        st.session_state.selected_model = "meta-llama/Llama-3.1-8B-Instruct"
+        st.session_state.selected_model = default_model_key(DEFAULT_MODEL, available_ollama_models())
 
     if "uploader_key" not in st.session_state:
         st.session_state.uploader_key = 0
@@ -263,21 +244,24 @@ def render_chat_sidebar(pipeline: RAGPipeline):
                       disabled=not st.session_state.messages, help="Save this chat")
         show_notifications()
 
-        # Model selector
-        model_keys = list(AVAILABLE_MODELS.keys())
-        display_names = [AVAILABLE_MODELS[m]["display_name"] for m in model_keys]
-        current_idx = model_keys.index(st.session_state.selected_model)
-        chosen_display = st.selectbox(
+        # Model selector: Ollama's models (while it's running), then the Hugging Face ones
+        model_keys = [OLLAMA_PREFIX + m for m in available_ollama_models()]
+        model_keys += [TRANSFORMERS_PREFIX + m for m in AVAILABLE_MODELS]
+        if st.session_state.selected_model not in model_keys:
+            model_keys.insert(0, st.session_state.selected_model)  # e.g. Ollama was stopped
+        chosen_model = st.selectbox(
             "Model",
-            options=display_names,
-            index=current_idx,
-            help="Switching models clears the cache and reloads the model."
+            options=model_keys,
+            index=model_keys.index(st.session_state.selected_model),
+            format_func=model_label,
+            help=f"Ollama models are listed while Ollama is running ({OLLAMA_CONFIG['host']}). "
+                 "HF (Hugging Face) models run inside the app and need an NVIDIA GPU."
         )
-        chosen_model = model_keys[display_names.index(chosen_display)]
         if chosen_model != st.session_state.selected_model:
             st.session_state.selected_model = chosen_model
-            st.cache_resource.clear()
-            torch.cuda.empty_cache()
+            st.session_state.pop("llm_error", None)
+            load_llm.clear()
+            release_all()
             st.rerun()
 
         # RAG settings
@@ -446,6 +430,13 @@ def summarize_document(filename: str, pipeline: RAGPipeline):
         filename: Name of the document to summarize
         pipeline: RAG pipeline instance
     """
+    pipeline.llm = get_llm()
+    if pipeline.llm is None:
+        key, error = st.session_state.llm_error
+        st.error(f"Can't summarize: {model_label(key)} didn't load ({error}). "
+                 "Pick another model in the Chat page's sidebar.", icon=":material/error:")
+        return
+
     with st.spinner(f"Generating summary for {filename}..."):
         # Get all chunks from this document
         doc_info = pipeline.vector_store.get_document_info(filename)
@@ -539,32 +530,6 @@ def process_uploaded_files(uploaded_files, pipeline: RAGPipeline):
     st.rerun()
 
 
-def model_short_name() -> str:
-    """The selected model's display name without its size note, e.g. "Llama 3.1 8B"."""
-    return AVAILABLE_MODELS[st.session_state.selected_model]["display_name"].split(" (")[0]
-
-
-def gpu_status() -> Optional[str]:
-    """
-    Describe GPU memory in use, e.g. "RTX 3060 · 5.1 / 12.0 GB".
-
-    Returns:
-        The description, or None when no CUDA GPU is available
-    """
-    if not torch.cuda.is_available():
-        return None
-    try:
-        count = torch.cuda.device_count()
-        memory = [torch.cuda.mem_get_info(i) for i in range(count)]  # (free, total) bytes
-        name = torch.cuda.get_device_name(0).replace("NVIDIA ", "").replace("GeForce ", "")
-    except RuntimeError:
-        return None
-    used_gb = sum(total - free for free, total in memory) / 1024 ** 3
-    total_gb = sum(total for _, total in memory) / 1024 ** 3
-    label = name if count == 1 else f"{count} GPUs"
-    return f"{label} \u00b7 {used_gb:.1f} / {total_gb:.1f} GB"
-
-
 def render_status_bar(pipeline: RAGPipeline):
     """
     Render a compact row of badges: model, document (RAG) state and hardware.
@@ -572,7 +537,7 @@ def render_status_bar(pipeline: RAGPipeline):
     Args:
         pipeline: RAG pipeline instance
     """
-    model_name = model_short_name()
+    model_name = short_label(st.session_state.selected_model)
     with st.container(horizontal=True, gap="small"):
         st.badge(model_name, icon=":material/neurology:", color="primary")
 
@@ -588,14 +553,20 @@ def render_status_bar(pipeline: RAGPipeline):
             else:
                 st.badge(f"Documents on \u00b7 {doc_count} indexed", icon=":material/description:", color="green")
 
-        st.badge(gpu_status() or "CPU", icon=":material/memory:", color="gray")
+        if pipeline.llm is not None:
+            status = pipeline.llm.status()
+            if status:
+                st.badge(status, icon=":material/memory:", color="gray")
+        else:
+            st.badge("Model not loaded", icon=":material/error:", color="red")
 
 
 def render_welcome():
     """Render the greeting shown in place of an empty chat."""
-    model_name = model_short_name()
+    key = st.session_state.selected_model
     st.header("What can I help with?", anchor=False)
-    hint = f"Answers come from {model_name}, running locally."
+    where = "via Ollama" if key.startswith(OLLAMA_PREFIX) else "running inside this app"
+    hint = f"Answers come from {short_label(key)}, {where}."
     if not st.session_state.rag_enabled:
         hint += " Turn on **Answer from documents** in the sidebar to ask about your files."
     st.caption(hint)
@@ -612,8 +583,8 @@ def render_chat_interface(pipeline: RAGPipeline):
 
     # Read the chat input first (it's pinned to the bottom wherever it's called),
     # so the history knows whether a new answer is about to be generated
-    prompt = st.chat_input("Ask me anything...")
-    regenerate = st.session_state.pop("regenerate_requested", False)
+    prompt = st.chat_input("Ask me anything...", disabled=pipeline.llm is None)
+    regenerate = st.session_state.pop("regenerate_requested", False) and pipeline.llm is not None
 
     if not st.session_state.messages and not prompt:
         render_welcome()
@@ -624,8 +595,13 @@ def render_chat_interface(pipeline: RAGPipeline):
         with st.chat_message(message["role"], avatar=AVATARS.get(message["role"])):
             st.markdown(message["content"])
             if message["role"] == "assistant":
-                is_latest = i == len(messages) - 1 and not prompt
-                render_assistant_details(message, can_regenerate=is_latest)
+                # Regenerate removes the answer first, so only offer it when a model can replace it
+                can_regenerate = i == len(messages) - 1 and not prompt and pipeline.llm is not None
+                render_assistant_details(message, can_regenerate=can_regenerate)
+
+    # Below the history, just above the (disabled) chat input, where it'll be seen
+    if pipeline.llm is None:
+        render_llm_error()
 
     if prompt:
         # Add user message
@@ -834,30 +810,64 @@ def start_response(prompt: str, pipeline: RAGPipeline) -> dict:
     return result
 
 
-def get_pipeline() -> RAGPipeline:
+def get_llm() -> Optional[LLMBackend]:
     """
-    Load the selected model and the RAG pipeline (both cached), stopping the page on failure.
+    Load the selected model.
 
     Returns:
-        RAGPipeline instance
+        The backend, or None if it failed to load. The error is kept in session
+        state so a failing model isn't retried on every rerun.
     """
+    key = st.session_state.selected_model
+    failed = st.session_state.get("llm_error")
+    if failed and failed[0] == key:
+        return None
     try:
-        model, tokenizer = load_model_and_tokenizer(st.session_state.selected_model)
-        return initialize_rag_pipeline(st.session_state.selected_model, model, tokenizer)
+        return load_llm(key)
     except Exception as e:
-        st.error(f"Failed to initialize application: {str(e)}")
-        st.stop()
+        st.session_state.llm_error = (key, str(e))
+        return None
+
+
+def render_llm_error():
+    """Explain why the selected model didn't load, with a way to retry."""
+    key, error = st.session_state.llm_error
+    with st.container(border=True):
+        st.error(f"Couldn't load {model_label(key)}: {error}", icon=":material/error:")
+        if key.startswith(TRANSFORMERS_PREFIX) and not cuda_available():
+            st.markdown(
+                "Ollama can run models on this machine instead: install it from "
+                "[ollama.com](https://ollama.com), run `ollama pull llama3.1:8b`, and pick the model "
+                "from the **Model** list in the sidebar."
+            )
+        elif key.startswith(OLLAMA_PREFIX):
+            st.markdown("Check that Ollama is running, then try again.")
+        if st.button("Try again", icon=":material/refresh:"):
+            del st.session_state.llm_error
+            st.rerun()
+
+
+def get_pipeline() -> RAGPipeline:
+    """
+    Build a RAG pipeline on the cached document index, without a model yet.
+
+    Returns:
+        RAGPipeline instance; set its llm with get_llm() before generating
+    """
+    vector_store, doc_processor = load_retrieval()
+    return RAGPipeline(None, vector_store, doc_processor)
 
 
 def chat_page():
     """The chat page."""
     pipeline = get_pipeline()
-    render_chat_sidebar(pipeline)
+    render_chat_sidebar(pipeline)  # before loading the model, so it stays usable if loading fails
+    pipeline.llm = get_llm()
     render_chat_interface(pipeline)
 
 
 def documents_page():
-    """The documents page."""
+    """The documents page (it only needs a model to summarize)."""
     render_documents_page(get_pipeline())
 
 

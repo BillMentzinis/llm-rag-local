@@ -1,0 +1,15 @@
+# Install with pip for the Ollama backend. It runs on macOS, Windows and Linux,
+# with or without a GPU. Install Ollama itself from https://ollama.com.
+#
+#   python -m venv .venv
+#   source .venv/bin/activate        # Windows: .venv\Scripts\activate
+#   pip install -r requirements.txt
+#
+# To also run Hugging Face models inside the app (NVIDIA GPU), use
+# environment.yml instead, or add: pip install accelerate bitsandbytes
+streamlit>=1.51
+ollama>=0.4
+chromadb
+sentence-transformers
+pymupdf
+pytest
