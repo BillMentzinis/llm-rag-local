@@ -8,9 +8,7 @@ old/
 __pycache__/
 *.pyc
 *.pyo
-
-# Transient file uploads
-temp_uploads/
+.pytest_cache/
 
 # Saved chat sessions — personal, not for sharing
 chats/

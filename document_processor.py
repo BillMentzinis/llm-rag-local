@@ -5,6 +5,7 @@ Handles file parsing, text extraction, and chunking for various file types.
 
 import os
 import re
+import hashlib
 from typing import List, Dict, Optional
 from datetime import datetime
 import fitz  # PyMuPDF
@@ -24,8 +25,12 @@ class DocumentProcessor:
             chunk_size: Number of tokens per chunk (default from config)
             chunk_overlap: Number of overlapping tokens (default from config)
         """
-        self.chunk_size = chunk_size or RAG_CONFIG["chunk_size"]
-        self.chunk_overlap = chunk_overlap or RAG_CONFIG["chunk_overlap"]
+        self.chunk_size = chunk_size if chunk_size is not None else RAG_CONFIG["chunk_size"]
+        self.chunk_overlap = chunk_overlap if chunk_overlap is not None else RAG_CONFIG["chunk_overlap"]
+        if self.chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        if not 0 <= self.chunk_overlap < self.chunk_size:
+            raise ValueError("chunk_overlap must be at least 0 and smaller than chunk_size")
         self.max_file_size = FILE_CONFIG["max_file_size_mb"] * 1024 * 1024  # Convert to bytes
 
     def is_supported(self, filename: str) -> bool:
@@ -78,6 +83,23 @@ class DocumentProcessor:
             return False, "File is empty"
 
         return True, None
+
+    @staticmethod
+    def compute_file_hash(file_path: str) -> str:
+        """
+        Compute a SHA-256 hash of a file's bytes, used to detect re-uploads.
+
+        Args:
+            file_path: Path to the file
+
+        Returns:
+            Hex digest
+        """
+        digest = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for block in iter(lambda: f.read(1 << 20), b""):
+                digest.update(block)
+        return digest.hexdigest()
 
     def extract_text_from_pdf(self, file_path: str) -> str:
         """
@@ -326,6 +348,7 @@ class DocumentProcessor:
             "filename": filename,
             "file_type": self.get_file_type(filename),
             "upload_timestamp": datetime.now().isoformat(),
+            "content_hash": self.compute_file_hash(file_path),
         }
 
         # Chunk text
