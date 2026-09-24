@@ -15,6 +15,7 @@ chats/
 
 # Secrets
 .env
+.streamlit/secrets.toml
 
 # Packaging artifacts
 *.egg-info/

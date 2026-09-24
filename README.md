@@ -15,7 +15,7 @@ conda activate llm-local
 streamlit run streamlit_app.py
 ```
 
-The app opens at `http://localhost:8501`. On first run it downloads the embedding model (~90 MB). LLM weights are downloaded from Hugging Face on first use and cached at `~/.cache/huggingface/hub/`.
+The app opens at `http://localhost:8501`. Run it from the repository folder so Streamlit picks up the theme in `.streamlit/config.toml`. On first run it downloads the embedding model (~90 MB). LLM weights are downloaded from Hugging Face on first use and cached at `~/.cache/huggingface/hub/`.
 
 > **Note:** Models gated on Hugging Face (e.g. Llama) require an account with access. Log in with `huggingface-cli login` before starting.
 
@@ -27,6 +27,7 @@ The app opens at `http://localhost:8501`. On first run it downloads the embeddin
 - Chat interface with 4-bit quantized models (~2–8 GB VRAM depending on model)
 - Streaming responses: text appears as it's generated, with a **Stop generating** button that halts the model and keeps the partial answer
 - **Copy** any answer (as raw Markdown) and **Regenerate** the latest one
+- Light and dark themes that follow your system setting, and a status bar showing the model, whether answers use your documents, and GPU memory in use
 - RAG support: upload documents and get cited, grounded answers
 - Chat history: save, load, and delete named chat sessions (stored as JSON)
 - Supported file types: PDF, TXT, MD, and common code files
@@ -66,6 +67,7 @@ LLM/
 ├── vector_store_manager.py # ChromaDB operations
 ├── chat_manager.py         # Chat save/load/delete helpers
 ├── config.py               # All configuration parameters
+├── .streamlit/config.toml  # Light and dark theme
 ├── environment.yml         # Conda environment
 ├── tests/                  # pytest suite (runs offline, no GPU needed)
 ├── chats/                  # Saved chat sessions (auto-created, gitignored)
