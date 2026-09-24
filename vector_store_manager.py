@@ -9,8 +9,14 @@ from typing import List, Dict, Optional
 from datetime import datetime
 import chromadb
 from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
 from config import RAG_CONFIG, PATHS
+
+# Cosine space + normalized embeddings means Chroma's distance is (1 - cosine
+# similarity), so similarity scores are meaningful and comparable.
+COLLECTION_METADATA = {
+    "description": "Document chunks for RAG",
+    "hnsw:space": "cosine",
+}
 
 
 class VectorStoreManager:
@@ -19,7 +25,7 @@ class VectorStoreManager:
     """
 
     def __init__(self, persist_directory: str = None, embedding_model_name: str = None,
-                 collection_name: str = "documents"):
+                 collection_name: str = "documents", embedding_model=None):
         """
         Initialize VectorStoreManager.
 
@@ -27,6 +33,8 @@ class VectorStoreManager:
             persist_directory: Directory for ChromaDB persistence (default from config)
             embedding_model_name: Name of sentence-transformers model (default from config)
             collection_name: Name of the ChromaDB collection
+            embedding_model: Optional preloaded model exposing encode() and
+                             get_sentence_embedding_dimension() (used by tests)
         """
         self.persist_directory = persist_directory or PATHS["chroma_db"]
         self.embedding_model_name = embedding_model_name or RAG_CONFIG["embedding_model"]
@@ -36,9 +44,13 @@ class VectorStoreManager:
         os.makedirs(self.persist_directory, exist_ok=True)
 
         # Initialize embedding model
-        print(f"Loading embedding model: {self.embedding_model_name}...")
-        self.embedding_model = SentenceTransformer(self.embedding_model_name)
-        print(f"Embedding model loaded. Dimension: {self.embedding_model.get_sentence_embedding_dimension()}")
+        if embedding_model is not None:
+            self.embedding_model = embedding_model
+        else:
+            from sentence_transformers import SentenceTransformer
+            print(f"Loading embedding model: {self.embedding_model_name}...")
+            self.embedding_model = SentenceTransformer(self.embedding_model_name)
+        print(f"Embedding model ready. Dimension: {self.embedding_model.get_sentence_embedding_dimension()}")
 
         # Initialize ChromaDB client
         self.client = chromadb.PersistentClient(
@@ -46,13 +58,54 @@ class VectorStoreManager:
             settings=Settings(anonymized_telemetry=False)
         )
 
-        # Get or create collection
-        self.collection = self.client.get_or_create_collection(
-            name=self.collection_name,
-            metadata={"description": "Document chunks for RAG"}
-        )
+        self.collection = self._open_collection()
 
         print(f"ChromaDB collection '{self.collection_name}' ready. Current count: {self.collection.count()}")
+
+    def _open_collection(self):
+        """
+        Open the collection, migrating a legacy (L2-space) index to cosine space.
+
+        Older versions of this app created the collection with Chroma's default
+        L2 distance. The distance space can't be changed in place, so the stored
+        chunks are re-embedded into a new cosine collection, which then takes
+        over the original name.
+        """
+        migration_name = f"{self.collection_name}_cosine_migration"
+        existing = {c.name if hasattr(c, "name") else c for c in self.client.list_collections()}
+
+        # Recover from a migration interrupted after the old collection was deleted
+        if migration_name in existing and self.collection_name not in existing:
+            self.client.get_collection(migration_name).modify(name=self.collection_name)
+            existing = {self.collection_name}
+        # ...or before it was deleted: discard the partial copy and start over
+        elif migration_name in existing:
+            self.client.delete_collection(migration_name)
+
+        if self.collection_name not in existing:
+            return self.client.create_collection(
+                name=self.collection_name, metadata=COLLECTION_METADATA
+            )
+
+        collection = self.client.get_collection(self.collection_name)
+        if (collection.metadata or {}).get("hnsw:space") == "cosine":
+            return collection
+
+        if collection.count() == 0:
+            self.client.delete_collection(self.collection_name)
+            return self.client.create_collection(
+                name=self.collection_name, metadata=COLLECTION_METADATA
+            )
+
+        print(f"Migrating {collection.count()} chunks to cosine similarity (one-time re-embedding)...")
+        data = collection.get(include=["documents", "metadatas"])
+        migrated = self.client.create_collection(name=migration_name, metadata=COLLECTION_METADATA)
+        self._write_chunks(migrated, data["ids"], data["documents"], data["metadatas"],
+                           self.generate_embeddings(data["documents"]))
+        self.client.delete_collection(self.collection_name)
+        migrated.modify(name=self.collection_name)
+        print("Migration complete.")
+        return self.client.get_collection(self.collection_name)
 
     def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
         """
@@ -64,27 +117,49 @@ class VectorStoreManager:
         Returns:
             List of embedding vectors
         """
-        embeddings = self.embedding_model.encode(texts, show_progress_bar=False)
+        embeddings = self.embedding_model.encode(
+            texts, show_progress_bar=False, normalize_embeddings=True
+        )
         return embeddings.tolist()
 
-    def _generate_chunk_id(self, file_path: str, chunk_index: int) -> str:
+    def _generate_chunk_id(self, filename: str, chunk_index: int) -> str:
         """
         Generate unique ID for a chunk.
 
+        The filename is the document's identity throughout the app (listing,
+        filtering and deletion all key on it), so uploading a file with the
+        same name replaces the earlier version.
+
         Args:
-            file_path: Full source file path (used to avoid collisions between
-                       files with the same name from different directories)
+            filename: Document filename
             chunk_index: Index of chunk
 
         Returns:
             Unique chunk ID
         """
-        file_hash = hashlib.md5(file_path.encode()).hexdigest()[:8]
+        file_hash = hashlib.md5(filename.encode()).hexdigest()[:16]
         return f"{file_hash}_{chunk_index}"
+
+    @staticmethod
+    def _write_chunks(collection, ids: List[str], documents: List[str], metadatas: List[Dict],
+                      embeddings: List[List[float]], batch_size: int = 100) -> None:
+        """Upsert pre-embedded chunks into a collection in batches."""
+        for i in range(0, len(ids), batch_size):
+            collection.upsert(
+                ids=ids[i:i + batch_size],
+                documents=documents[i:i + batch_size],
+                embeddings=embeddings[i:i + batch_size],
+                metadatas=metadatas[i:i + batch_size],
+            )
 
     def add_documents(self, chunks: List[Dict], batch_size: int = 100) -> int:
         """
-        Add document chunks to vector store.
+        Add document chunks to vector store, replacing any earlier version.
+
+        Chunks are grouped by filename; any existing chunks for those filenames
+        are removed so a shorter re-upload doesn't leave stale chunks behind.
+        Embeddings are computed before anything is deleted, so a failure
+        leaves the previous version intact.
 
         Args:
             chunks: List of chunk dictionaries with 'text' and metadata
@@ -103,7 +178,7 @@ class VectorStoreManager:
 
         for chunk in chunks:
             chunk_id = self._generate_chunk_id(
-                chunk.get("file_path", chunk.get("filename", "unknown")),
+                chunk.get("filename", "unknown"),
                 chunk.get("chunk_index", 0)
             )
 
@@ -118,26 +193,18 @@ class VectorStoreManager:
                 "total_chunks": chunk.get("total_chunks", 1),
                 "upload_timestamp": chunk.get("upload_timestamp", datetime.now().isoformat()),
                 "char_count": chunk.get("char_count", len(chunk["text"])),
+                "content_hash": chunk.get("content_hash", ""),
             }
             metadatas.append(metadata)
 
-        # Generate embeddings
+        # Generate embeddings before touching existing data
         print(f"Generating embeddings for {len(documents)} chunks...")
         embeddings = self.generate_embeddings(documents)
 
-        # Add to collection in batches
-        for i in range(0, len(ids), batch_size):
-            batch_ids = ids[i:i + batch_size]
-            batch_docs = documents[i:i + batch_size]
-            batch_embeddings = embeddings[i:i + batch_size]
-            batch_metadatas = metadatas[i:i + batch_size]
+        for filename in {m["filename"] for m in metadatas}:
+            self.delete_document(filename)
 
-            self.collection.add(
-                ids=batch_ids,
-                documents=batch_docs,
-                embeddings=batch_embeddings,
-                metadatas=batch_metadatas
-            )
+        self._write_chunks(self.collection, ids, documents, metadatas, embeddings, batch_size)
 
         print(f"Added {len(ids)} chunks to vector store.")
         return len(ids)
@@ -181,10 +248,8 @@ class VectorStoreManager:
                 results["metadatas"][0],
                 results["distances"][0]
             )):
-                # Convert distance to similarity (ChromaDB uses L2 distance)
-                # Similarity is inversely related to distance
-                # We'll normalize it to 0-1 range where 1 is most similar
-                similarity = 1 / (1 + distance)
+                # Cosine distance is (1 - cosine similarity)
+                similarity = 1.0 - distance
 
                 # Filter by minimum similarity
                 if similarity < min_similarity:
@@ -253,6 +318,25 @@ class VectorStoreManager:
 
         return list(documents.values())
 
+    def get_content_hash(self, filename: str) -> Optional[str]:
+        """
+        Get the content hash stored for a document.
+
+        Args:
+            filename: Name of the document
+
+        Returns:
+            The hash, or None if the document isn't indexed or predates hashing
+        """
+        results = self.collection.get(
+            where={"filename": filename},
+            include=["metadatas"],
+            limit=1
+        )
+        if not results["metadatas"]:
+            return None
+        return results["metadatas"][0].get("content_hash") or None
+
     def get_document_info(self, filename: str) -> Optional[Dict]:
         """
         Get information about a specific document.
@@ -290,9 +374,9 @@ class VectorStoreManager:
         if count > 0:
             # Delete the collection and recreate it
             self.client.delete_collection(self.collection_name)
-            self.collection = self.client.get_or_create_collection(
+            self.collection = self.client.create_collection(
                 name=self.collection_name,
-                metadata={"description": "Document chunks for RAG"}
+                metadata=COLLECTION_METADATA
             )
             print(f"Cleared all {count} chunks from vector store")
 

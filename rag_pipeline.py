@@ -3,6 +3,7 @@ RAG Pipeline Module.
 Orchestrates document processing, retrieval, and generation for RAG functionality.
 """
 
+import os
 import torch
 from typing import List, Dict, Optional, Any
 from document_processor import DocumentProcessor
@@ -42,25 +43,43 @@ class RAGPipeline:
         Args:
             file_path: Path to document file
 
+        Re-ingesting a file with the same name replaces the indexed version,
+        unless its content is unchanged, in which case it's skipped.
+
         Returns:
             Dictionary with ingestion results and metadata
         """
         try:
+            filename = os.path.basename(file_path)
+            previous_hash = self.vector_store.get_content_hash(filename)
+            if previous_hash and previous_hash == self.doc_processor.compute_file_hash(file_path):
+                return {
+                    "success": True,
+                    "skipped": True,
+                    "filename": filename,
+                    "chunks_added": 0,
+                    "message": f"{filename} is already indexed and unchanged"
+                }
+            replacing = self.vector_store.get_document_info(filename) is not None
+
             # Process document
             print(f"Processing file: {file_path}")
             result = self.doc_processor.process_file(file_path)
 
-            # Add to vector store
+            # Add to vector store (replaces any earlier version of this file)
             chunks_added = self.vector_store.add_documents(result["chunks"])
 
+            action = "Updated" if replacing else "Processed"
             return {
                 "success": True,
+                "skipped": False,
+                "replaced": replacing,
                 "filename": result["filename"],
                 "file_type": result["file_type"],
                 "chunks_added": chunks_added,
                 "total_chars": result["total_chars"],
                 "estimated_tokens": result["estimated_tokens"],
-                "message": f"Successfully processed {result['filename']}: {chunks_added} chunks indexed"
+                "message": f"{action} {result['filename']}: {chunks_added} chunks indexed"
             }
 
         except Exception as e:
@@ -70,7 +89,8 @@ class RAGPipeline:
                 "message": f"Failed to process document: {str(e)}"
             }
 
-    def retrieve_context(self, query: str, top_k: int = None, min_similarity: float = None) -> List[Dict]:
+    def retrieve_context(self, query: str, top_k: int = None, min_similarity: float = None,
+                         filter_metadata: Dict = None) -> List[Dict]:
         """
         Retrieve relevant document chunks for a query.
 
@@ -78,6 +98,7 @@ class RAGPipeline:
             query: User query
             top_k: Number of chunks to retrieve (default from config)
             min_similarity: Minimum similarity threshold (default from config)
+            filter_metadata: Optional metadata filter, e.g. {"filename": "doc.pdf"}
 
         Returns:
             List of retrieved chunk dictionaries
@@ -86,7 +107,8 @@ class RAGPipeline:
             return []
 
         top_k = top_k or self.config["top_k"]
-        results = self.vector_store.search(query, top_k=top_k, min_similarity=min_similarity)
+        results = self.vector_store.search(query, top_k=top_k, min_similarity=min_similarity,
+                                           filter_metadata=filter_metadata)
 
         return results
 
@@ -252,7 +274,8 @@ class RAGPipeline:
         }
 
     def generate_with_rag(self, query: str, history: List[Dict] = None,
-                         top_k: int = None, generation_config: Dict = None) -> Dict:
+                         top_k: int = None, generation_config: Dict = None,
+                         filter_metadata: Dict = None) -> Dict:
         """
         Convenience method for RAG-enhanced generation.
 
@@ -261,12 +284,13 @@ class RAGPipeline:
             history: Optional conversation history
             top_k: Number of context chunks to retrieve
             generation_config: Optional generation parameters
+            filter_metadata: Optional metadata filter, e.g. {"filename": "doc.pdf"}
 
         Returns:
             Dictionary with response and metadata
         """
         # Retrieve context
-        context_chunks = self.retrieve_context(query, top_k=top_k)
+        context_chunks = self.retrieve_context(query, top_k=top_k, filter_metadata=filter_metadata)
 
         # Generate response
         result = self.generate_response(

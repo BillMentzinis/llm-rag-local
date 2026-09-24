@@ -3,6 +3,7 @@ Streamlit UI for RAG-Enabled Llama 3.2 3B Chat Application.
 """
 
 import os
+import tempfile
 import streamlit as st
 import torch
 from datetime import datetime
@@ -16,6 +17,9 @@ from rag_pipeline import RAGPipeline
 from vector_store_manager import VectorStoreManager
 from document_processor import DocumentProcessor
 from chat_manager import save_chat, load_chat, list_chats, delete_chat, auto_name_from_message
+
+
+NO_CONTEXT_NOTE = "No relevant document context found, so this answer uses the model's general knowledge."
 
 
 # Page configuration
@@ -95,9 +99,6 @@ def initialize_session_state():
 
     if "max_tokens" not in st.session_state:
         st.session_state.max_tokens = GENERATION_CONFIG["max_new_tokens"]
-
-    if "uploaded_files_processed" not in st.session_state:
-        st.session_state.uploaded_files_processed = set()
 
     if "selected_document" not in st.session_state:
         st.session_state.selected_document = "All Documents"
@@ -187,15 +188,12 @@ def render_sidebar(pipeline: RAGPipeline):
                 with col2:
                     if st.button("Delete", key="delete_btn"):
                         count = pipeline.delete_document(selected_doc)
-                        if selected_doc in st.session_state.uploaded_files_processed:
-                            st.session_state.uploaded_files_processed.remove(selected_doc)
                         st.success(f"Deleted {count} chunks from {selected_doc}")
                         st.rerun()
 
             # Document management buttons
             if st.button("Clear All Documents"):
                 count = pipeline.clear_all_documents()
-                st.session_state.uploaded_files_processed.clear()
                 st.session_state.document_summaries.clear()
                 st.success(f"Cleared {count} chunks")
                 st.rerun()
@@ -339,15 +337,13 @@ def summarize_document(filename: str, pipeline: RAGPipeline):
         # Retrieve multiple chunks to get good coverage
         summary_prompt = f"Provide a comprehensive summary of the key points and main topics covered in {filename}. Include the most important information and insights."
 
-        # Retrieve more chunks for summarization
+        # Retrieve more chunks for summarization, from this document only
         context_chunks = pipeline.retrieve_context(
             query=summary_prompt,
             top_k=min(10, doc_info["chunk_count"]),  # Get up to 10 chunks
-            min_similarity=0.3  # Lower threshold for summarization
+            min_similarity=0.0,  # Any chunk of the document is useful for a summary
+            filter_metadata={"filename": filename}
         )
-
-        # Filter to only this document
-        context_chunks = [c for c in context_chunks if c["metadata"]["filename"] == filename]
 
         if not context_chunks:
             st.warning(f"Could not retrieve content from {filename}")
@@ -400,34 +396,27 @@ def process_uploaded_files(uploaded_files, pipeline: RAGPipeline):
     status_text = st.empty()
 
     for i, uploaded_file in enumerate(uploaded_files):
-        # Skip if already processed
-        if uploaded_file.name in st.session_state.uploaded_files_processed:
-            continue
-
-        status_text.text(f"Processing {uploaded_file.name}...")
-
-        # Save to temporary file
-        temp_path = f"temp_{uploaded_file.name}"
-        with open(temp_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
+        # Keep only the base name so the upload can't escape the temp directory;
+        # the file keeps its original name, which becomes the document's name
+        filename = os.path.basename(uploaded_file.name)
+        status_text.text(f"Processing {filename}...")
 
         try:
-            # Process with pipeline
-            result = pipeline.ingest_document(temp_path)
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = os.path.join(temp_dir, filename)
+                with open(temp_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+
+                # Process with pipeline (skips files that are indexed and unchanged)
+                result = pipeline.ingest_document(temp_path)
 
             if result["success"]:
                 st.success(result["message"])
-                st.session_state.uploaded_files_processed.add(uploaded_file.name)
             else:
                 st.error(result["message"])
 
         except Exception as e:
-            st.error(f"Error processing {uploaded_file.name}: {str(e)}")
-
-        finally:
-            # Clean up temp file
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            st.error(f"Error processing {filename}: {str(e)}")
 
         # Update progress
         progress_bar.progress((i + 1) / len(uploaded_files))
@@ -463,6 +452,9 @@ def render_chat_interface(pipeline: RAGPipeline):
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
+            if message.get("rag_no_context"):
+                st.caption(NO_CONTEXT_NOTE)
+
             # Show sources if available
             if message["role"] == "assistant" and "sources" in message and message["sources"]:
                 with st.expander(f"Sources ({len(message['sources'])} chunks used)"):
@@ -487,6 +479,10 @@ def render_chat_interface(pipeline: RAGPipeline):
                 # Display response
                 st.markdown(response_data["response"])
 
+                rag_no_context = response_data.get("rag_attempted", False) and not response_data["sources"]
+                if rag_no_context:
+                    st.caption(NO_CONTEXT_NOTE)
+
                 # Display sources if RAG was used
                 if response_data["sources"]:
                     with st.expander(f"Sources ({len(response_data['sources'])} chunks used)"):
@@ -499,7 +495,8 @@ def render_chat_interface(pipeline: RAGPipeline):
         st.session_state.messages.append({
             "role": "assistant",
             "content": response_data["response"],
-            "sources": response_data["sources"]
+            "sources": response_data["sources"],
+            "rag_no_context": rag_no_context
         })
 
 
@@ -541,19 +538,18 @@ def generate_response(prompt: str, pipeline: RAGPipeline) -> dict:
         context_chunks = pipeline.retrieve_context(
             query=prompt,
             top_k=st.session_state.top_k,
-            min_similarity=None  # Use default from config
+            min_similarity=None,  # Use default from config
+            filter_metadata=filter_metadata
         )
 
-        # Filter by document if specified
-        if filter_metadata:
-            context_chunks = [c for c in context_chunks if c["metadata"]["filename"] == filter_metadata["filename"]]
-            if not context_chunks:
-                st.warning(f"No relevant chunks found in '{st.session_state.selected_document}'. Searching all documents.")
-                context_chunks = pipeline.retrieve_context(
-                    query=prompt,
-                    top_k=st.session_state.top_k,
-                    min_similarity=None
-                )
+        # Fall back to all documents if the focused one has nothing relevant
+        if filter_metadata and not context_chunks:
+            st.warning(f"No relevant chunks found in '{st.session_state.selected_document}'. Searching all documents.")
+            context_chunks = pipeline.retrieve_context(
+                query=prompt,
+                top_k=st.session_state.top_k,
+                min_similarity=None
+            )
 
         # Generate with context
         result = pipeline.generate_response(
@@ -562,6 +558,7 @@ def generate_response(prompt: str, pipeline: RAGPipeline) -> dict:
             history=history,
             generation_config=gen_config
         )
+        result["rag_attempted"] = True
     else:
         result = pipeline.generate_response(
             query=prompt,

@@ -65,6 +65,7 @@ LLM/
 ├── chat_manager.py         # Chat save/load/delete helpers
 ├── config.py               # All configuration parameters
 ├── environment.yml         # Conda environment
+├── tests/                  # pytest suite (runs offline, no GPU needed)
 ├── chats/                  # Saved chat sessions (auto-created, gitignored)
 └── chroma_db/              # Vector database (auto-created, gitignored)
 ```
@@ -79,7 +80,7 @@ LLM/
 
 ### RAG-Enhanced Chat
 
-1. **Upload documents** — click "Browse files" in the sidebar, select files, then "Process Documents"
+1. **Upload documents** — click "Browse files" in the sidebar, select files, then "Process Documents". Uploading a file with the same name as an indexed one replaces it; unchanged files are skipped
 2. **Enable RAG** — ensure "Enable RAG" is checked
 3. **Ask questions** — the model retrieves relevant chunks and cites sources
 
@@ -102,7 +103,7 @@ LLM/
 
 All parameters are in `config.py`:
 
-- **RAG**: `chunk_size` (512 tokens), `chunk_overlap` (50), `top_k` (3), `min_similarity` (0.5)
+- **RAG**: `chunk_size` (512 tokens), `chunk_overlap` (50), `top_k` (3), `min_similarity` (0.3, cosine similarity)
 - **Generation**: `temperature` (0.7), `top_p` (0.9), `max_new_tokens` (512)
 - **Models**: `AVAILABLE_MODELS` dict — add or remove models here
 
@@ -110,6 +111,15 @@ All parameters are in `config.py`:
 
 **Documents:** PDF, TXT, MD
 **Code:** Python, JavaScript, Java, C/C++, C#, Go, Rust, Ruby
+
+## Running Tests
+
+```bash
+pip install pytest   # already included in environment.yml
+pytest tests
+```
+
+The tests use a small stand-in embedding model and a temporary ChromaDB, so they run offline without a GPU or model downloads.
 
 ## Performance
 
@@ -126,7 +136,9 @@ All parameters are in `config.py`:
 
 **Switching models uses a lot of VRAM** — the old model is evicted from cache when you switch. If you run out of memory, restart the app.
 
-**Poor retrieval quality** — increase `top_k` in the sidebar, or lower `min_similarity` in `config.py`.
+**Poor retrieval quality** — increase `top_k` in the sidebar, or lower `min_similarity` in `config.py`. When no chunk clears the threshold, the answer is marked as coming from the model's general knowledge.
+
+**Upgrading from an older version** — on first launch, an existing `chroma_db/` is migrated automatically to cosine similarity (a one-time re-embedding of the stored chunks). Older versions stored uploads under a `temp_` prefix (e.g. `temp_report.pdf`); delete those from the sidebar and re-upload to get clean names.
 
 **Out of memory** — reduce `max_new_tokens`, close other GPU apps, or switch to a smaller model.
 
