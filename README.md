@@ -103,7 +103,7 @@ LLM/
 
 All parameters are in `config.py`:
 
-- **RAG**: `chunk_size` (512 tokens), `chunk_overlap` (50), `top_k` (3), `min_similarity` (0.3, cosine similarity)
+- **RAG**: `chunk_size` (200 tokens, overlap included), `chunk_overlap` (30), `top_k` (5), `min_similarity` (0.3, cosine similarity). The embedding model only reads the first 256 tokens of a chunk, so keep `chunk_size` below that if you raise it.
 - **Generation**: `temperature` (0.7), `top_p` (0.9), `max_new_tokens` (512)
 - **Models**: `AVAILABLE_MODELS` dict — add or remove models here
 
@@ -138,7 +138,7 @@ The tests use a small stand-in embedding model and a temporary ChromaDB, so they
 
 **Poor retrieval quality** — increase `top_k` in the sidebar, or lower `min_similarity` in `config.py`. When no chunk clears the threshold, the answer is marked as coming from the model's general knowledge.
 
-**Upgrading from an older version** — on first launch, an existing `chroma_db/` is migrated automatically to cosine similarity (a one-time re-embedding of the stored chunks). Older versions stored uploads under a `temp_` prefix (e.g. `temp_report.pdf`); delete those from the sidebar and re-upload to get clean names.
+**Upgrading from an older version** — on first launch, an existing `chroma_db/` is migrated automatically to cosine similarity (a one-time re-embedding of the stored chunks). Older versions stored uploads under a `temp_` prefix (e.g. `temp_report.pdf`); delete those from the sidebar and re-upload to get clean names. Documents indexed before the switch to 200-token chunks keep their old, larger chunks (whose second half isn't searchable) until you re-upload them. Re-uploading an unchanged file is normally skipped, but not when the chunk settings it was indexed with differ from the current ones, so a re-upload always picks up new `chunk_size`/`chunk_overlap` values.
 
 **Out of memory** — reduce `max_new_tokens`, close other GPU apps, or switch to a smaller model.
 

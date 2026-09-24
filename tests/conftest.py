@@ -48,7 +48,7 @@ def store(tmp_path, embedder):
     return VectorStoreManager(persist_directory=str(tmp_path / "chroma"), embedding_model=embedder)
 
 
-def make_chunks(filename, texts, content_hash="hash"):
+def make_chunks(filename, texts, content_hash="hash", chunk_config="200/30"):
     """Build chunk dicts shaped like DocumentProcessor output."""
     return [
         {
@@ -58,6 +58,7 @@ def make_chunks(filename, texts, content_hash="hash"):
             "chunk_index": i,
             "total_chunks": len(texts),
             "content_hash": content_hash,
+            "chunk_config": chunk_config,
         }
         for i, text in enumerate(texts)
     ]

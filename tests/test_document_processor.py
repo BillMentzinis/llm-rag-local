@@ -18,12 +18,11 @@ def test_short_text_is_a_single_chunk():
 def test_chunks_respect_size_bound_and_indexing():
     processor = DocumentProcessor(chunk_size=64, chunk_overlap=8)
     chunks = processor.chunk_text(SAMPLE)
-    size, overlap = 64 * 4, 8 * 4
 
     assert len(chunks) > 1
     assert all(c["text"].strip() for c in chunks)
-    # A chunk may carry the previous chunk's overlap on top of a full-size piece
-    assert all(len(c["text"]) <= size + overlap for c in chunks)
+    # chunk_size is a hard cap, overlap included (4 chars per estimated token)
+    assert all(len(c["text"]) <= 64 * 4 for c in chunks)
     assert [c["chunk_index"] for c in chunks] == list(range(len(chunks)))
     assert {c["total_chunks"] for c in chunks} == {len(chunks)}
 
@@ -34,6 +33,15 @@ def test_chunks_cover_every_word():
     assert set(re.findall(r"\w+", SAMPLE)) <= covered
 
 
+def test_overlap_never_pushes_a_chunk_past_chunk_size():
+    # Paragraphs just under the 40-char cap leave no room for a 20-char overlap
+    text = "\n\n".join(f"paragraph {i:02d} " + "x" * 22 for i in range(6))
+    chunks = DocumentProcessor(chunk_size=10, chunk_overlap=5).chunk_text(text)
+
+    assert len(chunks) == 6
+    assert all(len(c["text"]) <= 10 * 4 for c in chunks)
+
+
 def test_text_without_separators_is_force_split():
     processor = DocumentProcessor(chunk_size=50, chunk_overlap=5)
     chunks = processor.chunk_text("x" * 1000)
@@ -41,8 +49,22 @@ def test_text_without_separators_is_force_split():
     assert all(len(c["text"]) <= 50 * 4 for c in chunks)
 
 
-def test_zero_overlap_is_respected():
-    assert DocumentProcessor(chunk_size=100, chunk_overlap=0).chunk_overlap == 0
+def test_zero_overlap_does_not_repeat_text():
+    text = " ".join(f"word{i}" for i in range(40))
+    chunks = DocumentProcessor(chunk_size=10, chunk_overlap=0).chunk_text(text)
+
+    joined = " ".join(c["text"] for c in chunks)
+    assert len(chunks) > 1
+    assert joined.split() == text.split()
+
+
+def test_overlap_carries_text_between_chunks():
+    text = " ".join(f"word{i}" for i in range(40))
+    chunks = DocumentProcessor(chunk_size=10, chunk_overlap=3).chunk_text(text)
+
+    for previous, current in zip(chunks, chunks[1:]):
+        first_word = current["text"].split()[0]
+        assert first_word in previous["text"]
 
 
 @pytest.mark.parametrize("size, overlap", [(100, 100), (100, 150), (100, -1), (0, 0)])
@@ -59,6 +81,7 @@ def test_process_file_attaches_filename_and_content_hash(tmp_path):
     result = processor.process_file(str(path))
 
     assert result["filename"] == "notes.md"
+    assert all(c["chunk_config"] == processor.chunk_config for c in result["chunks"])
     file_hash = processor.compute_file_hash(str(path))
     assert all(c["filename"] == "notes.md" and c["content_hash"] == file_hash for c in result["chunks"])
 

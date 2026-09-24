@@ -33,6 +33,11 @@ class DocumentProcessor:
             raise ValueError("chunk_overlap must be at least 0 and smaller than chunk_size")
         self.max_file_size = FILE_CONFIG["max_file_size_mb"] * 1024 * 1024  # Convert to bytes
 
+    @property
+    def chunk_config(self) -> str:
+        """Chunking settings as stored with each chunk, e.g. "200/30"."""
+        return f"{self.chunk_size}/{self.chunk_overlap}"
+
     def is_supported(self, filename: str) -> bool:
         """
         Check if file type is supported.
@@ -274,8 +279,8 @@ class DocumentProcessor:
             # If adding piece would exceed chunk_size, save current chunk
             if len(current_chunk) + len(piece) > chunk_size and current_chunk:
                 chunks.append(current_chunk.strip())
-                # Start new chunk with overlap
-                current_chunk = self._get_overlap(current_chunk, overlap) + piece
+                # Start new chunk with overlap, trimmed so the chunk stays within chunk_size
+                current_chunk = self._get_overlap(current_chunk, min(overlap, chunk_size - len(piece))) + piece
             else:
                 current_chunk += piece
 
@@ -318,6 +323,8 @@ class DocumentProcessor:
         Returns:
             Overlap text
         """
+        if overlap_size <= 0:
+            return ""
         if len(text) <= overlap_size:
             return text
         return text[-overlap_size:]
@@ -349,6 +356,7 @@ class DocumentProcessor:
             "file_type": self.get_file_type(filename),
             "upload_timestamp": datetime.now().isoformat(),
             "content_hash": self.compute_file_hash(file_path),
+            "chunk_config": self.chunk_config,
         }
 
         # Chunk text

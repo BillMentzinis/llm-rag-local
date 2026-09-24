@@ -42,6 +42,20 @@ def test_ingest_changed_file_replaces_it(pipeline, tmp_path):
     assert [(d["filename"], d["chunk_count"]) for d in docs] == [("notes.txt", 1)]
 
 
+def test_changed_chunk_settings_rechunk_an_unchanged_file(pipeline, store, tmp_path):
+    long_text = "\n\n".join(f"Paragraph {i} about cats and their many habits." for i in range(20))
+    path = _write(tmp_path, "notes.txt", long_text)
+    first = pipeline.ingest_document(path)
+
+    rechunking = RAGPipeline(model=None, tokenizer=None, vector_store=store,
+                             doc_processor=DocumentProcessor(chunk_size=64, chunk_overlap=8))
+    second = rechunking.ingest_document(path)
+
+    assert not second["skipped"] and second["replaced"]
+    assert second["chunks_added"] < first["chunks_added"]
+    assert store.get_document_metadata("notes.txt")["chunk_config"] == "64/8"
+
+
 def test_retrieve_context_honours_document_filter(pipeline, tmp_path):
     pipeline.ingest_document(_write(tmp_path, "cats.txt", "cats purr and chase mice"))
     pipeline.ingest_document(_write(tmp_path, "dogs.txt", "dogs bark and chase cats"))

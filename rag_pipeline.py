@@ -44,15 +44,18 @@ class RAGPipeline:
             file_path: Path to document file
 
         Re-ingesting a file with the same name replaces the indexed version,
-        unless its content is unchanged, in which case it's skipped.
+        unless its content and the chunking settings are unchanged, in which
+        case it's skipped.
 
         Returns:
             Dictionary with ingestion results and metadata
         """
         try:
             filename = os.path.basename(file_path)
-            previous_hash = self.vector_store.get_content_hash(filename)
-            if previous_hash and previous_hash == self.doc_processor.compute_file_hash(file_path):
+            previous = self.vector_store.get_document_metadata(filename)
+            if (previous
+                    and previous.get("chunk_config") == self.doc_processor.chunk_config
+                    and previous.get("content_hash") == self.doc_processor.compute_file_hash(file_path)):
                 return {
                     "success": True,
                     "skipped": True,
@@ -60,7 +63,7 @@ class RAGPipeline:
                     "chunks_added": 0,
                     "message": f"{filename} is already indexed and unchanged"
                 }
-            replacing = self.vector_store.get_document_info(filename) is not None
+            replacing = previous is not None
 
             # Process document
             print(f"Processing file: {file_path}")
