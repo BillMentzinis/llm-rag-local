@@ -49,7 +49,7 @@ def test_reupload_replaces_and_drops_stale_chunks(store):
 
     stored = store.collection.get(where={"filename": "a.txt"}, include=["documents"])
     assert sorted(stored["documents"]) == ["dos", "uno"]
-    assert store.get_content_hash("a.txt") == "v2"
+    assert store.get_document_metadata("a.txt")["content_hash"] == "v2"
 
 
 def test_documents_with_different_names_do_not_collide(store):
@@ -65,7 +65,7 @@ def test_delete_and_clear(store):
     store.add_documents(make_chunks("b.txt", ["beta"]))
 
     assert store.delete_document("a.txt") == 2
-    assert store.get_content_hash("a.txt") is None
+    assert store.get_document_metadata("a.txt") is None
     assert store.clear_all() == 1
     assert store.is_empty()
     assert store.collection.metadata["hnsw:space"] == "cosine"

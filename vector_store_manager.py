@@ -194,6 +194,7 @@ class VectorStoreManager:
                 "upload_timestamp": chunk.get("upload_timestamp", datetime.now().isoformat()),
                 "char_count": chunk.get("char_count", len(chunk["text"])),
                 "content_hash": chunk.get("content_hash", ""),
+                "chunk_config": chunk.get("chunk_config", ""),
             }
             metadatas.append(metadata)
 
@@ -318,15 +319,18 @@ class VectorStoreManager:
 
         return list(documents.values())
 
-    def get_content_hash(self, filename: str) -> Optional[str]:
+    def get_document_metadata(self, filename: str) -> Optional[Dict]:
         """
-        Get the content hash stored for a document.
+        Get the metadata stored with one of a document's chunks.
+
+        Document-level fields (content_hash, chunk_config, file_type, ...) are
+        the same on every chunk, so any chunk will do.
 
         Args:
             filename: Name of the document
 
         Returns:
-            The hash, or None if the document isn't indexed or predates hashing
+            Metadata dictionary, or None if the document isn't indexed
         """
         results = self.collection.get(
             where={"filename": filename},
@@ -335,7 +339,7 @@ class VectorStoreManager:
         )
         if not results["metadatas"]:
             return None
-        return results["metadatas"][0].get("content_hash") or None
+        return results["metadatas"][0]
 
     def get_document_info(self, filename: str) -> Optional[Dict]:
         """

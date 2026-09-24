@@ -56,10 +56,12 @@ AVAILABLE_MODELS = {
 
 # RAG Configuration
 RAG_CONFIG = {
-    "chunk_size": 512,  # Tokens per chunk
-    "chunk_overlap": 50,  # Overlap between chunks
+    # all-MiniLM-L6-v2 only reads the first 256 tokens of its input, so a chunk
+    # (overlap included) must stay under that or its tail is never searchable
+    "chunk_size": 200,  # Tokens per chunk, overlap included (estimated as 4 chars/token)
+    "chunk_overlap": 30,  # Overlap between chunks
     "embedding_model": "all-MiniLM-L6-v2",  # Fast, 384-dim embeddings
-    "top_k": 3,  # Number of chunks to retrieve
+    "top_k": 5,  # Number of chunks to retrieve
     "context_max_tokens": 2048,  # Max tokens for RAG context
     "min_similarity": 0.3,  # Minimum cosine similarity for a chunk to be used (0-1)
 }
