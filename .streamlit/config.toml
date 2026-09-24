@@ -1,6 +1,7 @@
 # App theme. Streamlit shows the light or dark variant to match the viewer's
 # system setting; either can also be picked from the app's Settings menu.
-# Needs Streamlit >= 1.51 for the separate [theme.light] / [theme.dark] sections.
+# Needs Streamlit >= 1.51 for the separate [theme.light] / [theme.dark] sections
+# (the app itself requires 1.56).
 #
 # The accent (primaryColor) carries white button labels at >= 4.5:1 contrast in
 # both modes. In dark mode that caps how light it can be, so links get their own

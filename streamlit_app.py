@@ -7,13 +7,12 @@ import html
 import itertools
 import tempfile
 import streamlit as st
-import streamlit.components.v1 as components
 from datetime import datetime
 from typing import Optional
 
 from config import (
     GENERATION_CONFIG, UI_CONFIG, RAG_CONFIG, SUPPORTED_EXTENSIONS, AVAILABLE_MODELS,
-    DEFAULT_MODEL, OLLAMA_CONFIG
+    DEFAULT_MODEL, OLLAMA_CONFIG, CHAT_CONFIG
 )
 from llm_backends import (
     LLMBackend, OLLAMA_PREFIX, TRANSFORMERS_PREFIX, load_backend, release_all,
@@ -31,8 +30,10 @@ STOPPED_NOTE = "Stopped before the answer was complete."
 # Neutral icon avatars that suit the theme (Streamlit's defaults are red and orange)
 AVATARS = {"user": ":material/person:", "assistant": ":material/neurology:"}
 
-# A copy button in a component iframe (the only place a click can reach the
-# clipboard). The text travels in an HTML-escaped data attribute, never as code.
+# A copy button in an st.iframe (the only place a click can reach the clipboard:
+# the iframe allows scripts, same-origin access and clipboard-write). The HTML
+# starts with markup, so st.iframe always treats it as HTML (srcdoc), never as a
+# URL or file path. The text travels in an HTML-escaped data attribute, never as code.
 # It borrows the app's text colour, accent and font so it matches the theme,
 # and falls back to execCommand where navigator.clipboard is unavailable (plain
 # http on a LAN address, which isn't a secure context).
@@ -312,7 +313,8 @@ def render_chat_sidebar(pipeline: RAGPipeline):
                 step=50,
                 help="Maximum length of response"
             )
-            st.caption("Only the last 3 conversation turns are sent as context.")
+            st.caption(f"The model sees up to your last {CHAT_CONFIG['history_turns']} questions and "
+                       "answers, fewer if they don't fit its context window.")
 
         st.divider()
 
@@ -461,14 +463,7 @@ def summarize_document(filename: str, pipeline: RAGPipeline):
             return
 
         # Generate summary
-        gen_config = {
-            "max_new_tokens": 512,
-            "temperature": 0.6,  # Lower for more factual summary
-            "do_sample": True,
-            "top_p": 0.9,
-            "top_k": 50,
-            "repetition_penalty": 1.1,
-        }
+        gen_config = {**GENERATION_CONFIG, "temperature": 0.6}  # a little more focused for summaries
 
         result = pipeline.generate_response(
             query=summary_prompt,
@@ -706,8 +701,8 @@ def render_message_actions(message: dict, can_regenerate: bool):
     """
     with st.container(horizontal=True, vertical_alignment="center", gap="small"):
         if message["content"]:
-            components.html(COPY_BUTTON_HTML.format(text=html.escape(message["content"], quote=True)),
-                            width=70, height=40)
+            st.iframe(COPY_BUTTON_HTML.format(text=html.escape(message["content"], quote=True)),
+                      width=70, height=40)
         if can_regenerate:
             st.button("Regenerate", key="regenerate", icon=":material/refresh:", type="tertiary",
                       on_click=request_regenerate, help="Answer the last question again")
@@ -753,15 +748,12 @@ def start_response(prompt: str, pipeline: RAGPipeline) -> dict:
     """
     # Prepare generation config
     gen_config = {
+        **GENERATION_CONFIG,
         "max_new_tokens": st.session_state.max_tokens,
         "temperature": st.session_state.temperature,
-        "do_sample": True,
-        "top_p": 0.9,
-        "top_k": 50,
-        "repetition_penalty": 1.1,
     }
 
-    # Format conversation history
+    # Earlier messages; the pipeline picks the recent complete question/answer pairs
     history = [
         {"role": msg["role"], "content": msg["content"]}
         for msg in st.session_state.messages[:-1]  # Exclude current message

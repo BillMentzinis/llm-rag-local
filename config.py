@@ -18,6 +18,11 @@ DEFAULT_MODEL = os.environ.get("LLM_MODEL", "transformers:meta-llama/Llama-3.1-8
 OLLAMA_CONFIG = {
     "host": os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
     "list_timeout": 1.0,  # Seconds to wait when checking which models it has
+    # Context window to request, in tokens (capped at the model's own limit).
+    # Set explicitly because Ollama silently drops the start of a prompt that
+    # doesn't fit its default window, which is where the system prompt and
+    # document excerpts are. Larger windows use more memory.
+    "num_ctx": int(os.environ.get("OLLAMA_NUM_CTX", "8192")),
 }
 
 # Model Configuration (Hugging Face models run in-process)
@@ -76,11 +81,10 @@ RAG_CONFIG = {
     "chunk_overlap": 30,  # Overlap between chunks
     "embedding_model": "all-MiniLM-L6-v2",  # Fast, 384-dim embeddings
     "top_k": 5,  # Number of chunks to retrieve
-    "context_max_tokens": 2048,  # Max tokens for RAG context
     "min_similarity": 0.3,  # Minimum cosine similarity for a chunk to be used (0-1)
 }
 
-# Generation Configuration
+# Generation Configuration (the sidebar's sliders override temperature and max_new_tokens)
 GENERATION_CONFIG = {
     "max_new_tokens": 512,
     "do_sample": True,
@@ -90,14 +94,15 @@ GENERATION_CONFIG = {
     "repetition_penalty": 1.1,
 }
 
-# RAG-specific generation (more factual, less creative)
-RAG_GENERATION_CONFIG = {
-    "max_new_tokens": 512,
-    "do_sample": True,
-    "temperature": 0.6,  # Lower for factual responses
-    "top_p": 0.95,
-    "top_k": 50,
-    "repetition_penalty": 1.1,
+# Conversation and context window
+CHAT_CONFIG = {
+    "history_turns": 3,          # Past question/answer pairs sent with each question
+    "rag_context_tokens": 2048,  # Most tokens of document excerpts sent with a question
+    # When a prompt won't fit the model's context window (after reserving room
+    # for the answer), the oldest turns are dropped first, then the least
+    # relevant excerpts. This leaves headroom for chat-template tokens and for
+    # token estimates (about 4 characters per token for Ollama models).
+    "prompt_margin_tokens": 64,
 }
 
 # Supported File Types
@@ -132,7 +137,7 @@ PATHS = {
 }
 
 # RAG Prompt Template
-RAG_PROMPT_TEMPLATE = """You are a helpful AI assistant. You have access to relevant information from uploaded documents:
+RAG_PROMPT_TEMPLATE = """Relevant excerpts from the user's documents:
 
 --- DOCUMENT CONTEXT ---
 {context}
@@ -142,8 +147,8 @@ Use this information to answer the question. If the context is relevant, cite th
 
 Question: {query}"""
 
-# System Prompt for Non-RAG Mode
-SYSTEM_PROMPT = """You are a helpful AI assistant. Provide clear, accurate, and concise responses to user questions."""
+# System prompt, sent first in every conversation
+SYSTEM_PROMPT = """You are a helpful AI assistant running locally on the user's computer. Give clear, accurate and concise answers. When a question comes with excerpts from the user's documents, base your answer on them and cite the file names; if they don't contain the answer, say so before answering from general knowledge."""
 
 # Streamlit UI Configuration
 UI_CONFIG = {
@@ -151,12 +156,4 @@ UI_CONFIG = {
     "page_icon": "🦙",
     "layout": "wide",
     "initial_sidebar_state": "expanded",
-}
-
-# Token Budget Configuration (for context window management)
-TOKEN_BUDGET = {
-    "response": 1024,  # Reserved for model generation
-    "history": 512,  # Reserved for conversation history
-    "rag_context": 2048,  # Reserved for RAG context
-    "system_prompt": 256,  # Reserved for system prompt
 }

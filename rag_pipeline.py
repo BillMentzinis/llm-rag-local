@@ -8,7 +8,39 @@ from typing import List, Dict, Optional
 from document_processor import DocumentProcessor
 from llm_backends import LLMBackend
 from vector_store_manager import VectorStoreManager
-from config import RAG_CONFIG, RAG_PROMPT_TEMPLATE, TOKEN_BUDGET
+from config import CHAT_CONFIG, GENERATION_CONFIG, RAG_CONFIG, RAG_PROMPT_TEMPLATE, SYSTEM_PROMPT
+
+# Rough per-message cost of a chat template's role markers, in tokens
+MESSAGE_OVERHEAD_TOKENS = 8
+
+
+def select_history(history: Optional[List[Dict]], max_turns: int) -> List[List[Dict]]:
+    """
+    Pick the most recent complete question/answer pairs from a conversation.
+
+    Pairs keep the roles alternating from a user message, which some chat
+    templates require. A question whose answer has no text (it failed, or was
+    stopped before any output) is left out along with that answer, as are
+    unpaired messages.
+
+    Args:
+        history: Earlier messages [{"role": "user/assistant", "content": "..."}]
+        max_turns: Most pairs to keep
+
+    Returns:
+        List of [user message, assistant message] pairs, oldest first
+    """
+    turns = []
+    question = None
+    for msg in history or []:
+        content = msg.get("content") or ""
+        if msg.get("role") == "user":
+            question = {"role": "user", "content": content}
+        elif msg.get("role") == "assistant" and question is not None:
+            if content.strip():
+                turns.append([question, {"role": "assistant", "content": content}])
+            question = None
+    return turns[-max_turns:] if max_turns > 0 else []
 
 
 class RAGPipeline:
@@ -206,7 +238,9 @@ class RAGPipeline:
         """
         Start generating a response with optional RAG context, streaming its text.
 
-        Generation only starts once the stream is iterated. Closing the stream
+        The model gets the system prompt, the last few complete question/answer
+        pairs, and the question (with any document excerpts), trimmed to fit its
+        context window. Generation only starts once the stream is iterated. Closing the stream
         early (or abandoning it, as happens when Streamlit interrupts a script
         run) stops generation.
 
@@ -219,39 +253,53 @@ class RAGPipeline:
         Returns:
             Dictionary with "stream" (an iterator of text pieces) and metadata
         """
-        # Truncate context to fit budget
-        context_budget = TOKEN_BUDGET["rag_context"]
-        if context_chunks:
-            context_chunks = self.truncate_context_to_budget(context_chunks, context_budget)
-
-        # Build prompt with or without RAG context
-        if context_chunks:
-            prompt_text = self.build_rag_prompt(query, context_chunks)
-            sources_used = context_chunks
-        else:
-            prompt_text = query
-            sources_used = []
-
-        # Format conversation history
-        messages = []
-
-        # Add history if provided
-        if history:
-            for msg in history[-3:]:  # Keep last 3 turns to manage context
-                messages.append(msg)
-
-        # Add current query
-        messages.append({"role": "user", "content": prompt_text})
-
         if self.llm is None:
             raise RuntimeError("No language model is loaded")
+        generation_config = generation_config or {}
+
+        chunks = self.truncate_context_to_budget(context_chunks or [], CHAT_CONFIG["rag_context_tokens"])
+        turns = select_history(history, CHAT_CONFIG["history_turns"])
+        system = {"role": "system", "content": SYSTEM_PROMPT}
+
+        # Fit the prompt in the context window, leaving room for the answer. Drop
+        # the oldest turns first, then the least relevant excerpts (chunks arrive
+        # ranked); the question itself is always sent.
+        max_new_tokens = generation_config.get("max_new_tokens", GENERATION_CONFIG["max_new_tokens"])
+        prompt_budget = self.llm.context_window() - max_new_tokens - CHAT_CONFIG["prompt_margin_tokens"]
+        trimmed = False
+        while True:
+            question = {"role": "user", "content": self.build_rag_prompt(query, chunks)}
+            messages = [system] + [m for turn in turns for m in turn] + [question]
+            if self.count_prompt_tokens(messages) <= prompt_budget:
+                break
+            if turns:
+                turns = turns[1:]
+            elif chunks:
+                chunks = chunks[:-1]
+            else:
+                break
+            trimmed = True
 
         return {
-            "stream": self.llm.stream_chat(messages, generation_config or {}),
-            "sources": sources_used,
-            "num_sources": len(sources_used),
-            "rag_enabled": len(sources_used) > 0
+            "stream": self.llm.stream_chat(messages, generation_config),
+            "sources": chunks,
+            "num_sources": len(chunks),
+            "rag_enabled": len(chunks) > 0,
+            "history_turns": len(turns),
+            "trimmed_to_fit": trimmed
         }
+
+    def count_prompt_tokens(self, messages: List[Dict]) -> int:
+        """
+        Estimate the tokens a list of chat messages takes up in the prompt.
+
+        Args:
+            messages: Chat messages
+
+        Returns:
+            Estimated token count, including the chat template's role markers
+        """
+        return sum(self.estimate_token_count(m["content"]) + MESSAGE_OVERHEAD_TOKENS for m in messages)
 
     def generate_response(self, query: str, context_chunks: List[Dict] = None,
                          history: List[Dict] = None, generation_config: Dict = None) -> Dict:
