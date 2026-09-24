@@ -44,7 +44,7 @@ The app opens at `http://localhost:8501`. On first run it downloads the embeddin
 | `microsoft/Phi-3.5-mini-instruct` | Phi-3.5 Mini 3.8B | ~2 GB | Fast, efficient |
 | `microsoft/phi-4` | Phi-4 14B | ~8 GB | Needs larger GPU |
 
-Switch models using the **Model** selector at the top of the sidebar. Switching clears the model cache and reloads — documents and chat history are unaffected.
+Switch models using the **Model** selector in the chat sidebar. Switching clears the model cache and reloads — documents and chat history are unaffected.
 
 ## Architecture
 
@@ -74,32 +74,37 @@ LLM/
 
 ## Usage
 
+The app has two pages, switched from the bar at the top: **Chat** and **Documents**.
+
 ### Basic Chat (no documents)
 
 1. Start the app
-2. Disable "Enable RAG" in the sidebar
+2. Leave **Answer from documents** off in the sidebar
 3. Chat normally using the model's base knowledge
 
 ### RAG-Enhanced Chat
 
-1. **Upload documents** — click "Browse files" in the sidebar, select files, then "Process Documents". Uploading a file with the same name as an indexed one replaces it; unchanged files are skipped
-2. **Enable RAG** — ensure "Enable RAG" is checked
+1. **Add documents** — on the **Documents** page, upload files and click **Process documents**. Uploading a file with the same name as an indexed one replaces it; unchanged files are skipped
+2. **Turn on RAG** — switch on **Answer from documents** in the chat sidebar, optionally focusing on a single document
 3. **Ask questions** — the model retrieves relevant chunks and cites sources
+
+The Documents page also lists what's indexed, and can **Summarize** a document into the chat, **Delete** one, or **Clear all** (after a confirmation).
 
 ### Chat History
 
-- **Save Chat** — saves the current conversation to `chats/` named after your first message
-- **New Chat** — auto-saves the current conversation and starts a fresh session
-- **Saved Chats** expander — lists all saved sessions; click a name to load, click **X** to delete
+- **Save** — saves the current conversation to `chats/`, named after your first message
+- **New chat** — saves the current conversation and starts a fresh one
+- **Chats** list — click a chat to open it (the current one is saved first); the bin icon deletes it
 
 ### Adjusting Settings
 
-| Setting | Description |
-|---------|-------------|
-| Model | Select which LLM to use |
-| Context Chunks | Number of document chunks to retrieve (1-10) |
-| Temperature | Response randomness (0.1 = focused, 2.0 = creative) |
-| Max Tokens | Maximum response length |
+| Setting | Where | Description |
+|---------|-------|-------------|
+| Model | Chat sidebar | Select which LLM to use |
+| Focus on document | Chat sidebar, with RAG on | Retrieve only from one document |
+| Context chunks | Chat sidebar, with RAG on | Number of document chunks to retrieve (1-10) |
+| Temperature | Chat sidebar → Generation settings | Response randomness (0.1 = focused, 2.0 = creative) |
+| Max tokens | Chat sidebar → Generation settings | Maximum response length |
 
 ## Configuration
 
@@ -138,9 +143,9 @@ The tests use a small stand-in embedding model and a temporary ChromaDB, so they
 
 **Switching models uses a lot of VRAM** — the old model is evicted from cache when you switch. If you run out of memory, restart the app.
 
-**Poor retrieval quality** — increase `top_k` in the sidebar, or lower `min_similarity` in `config.py`. When no chunk clears the threshold, the answer is marked as coming from the model's general knowledge.
+**Poor retrieval quality** — increase **Context chunks** in the sidebar, or lower `min_similarity` in `config.py`. When no chunk clears the threshold, the answer is marked as coming from the model's general knowledge.
 
-**Upgrading from an older version** — on first launch, an existing `chroma_db/` is migrated automatically to cosine similarity (a one-time re-embedding of the stored chunks). Older versions stored uploads under a `temp_` prefix (e.g. `temp_report.pdf`); delete those from the sidebar and re-upload to get clean names. Documents indexed before the switch to 200-token chunks keep their old, larger chunks (whose second half isn't searchable) until you re-upload them. Re-uploading an unchanged file is normally skipped, but not when the chunk settings it was indexed with differ from the current ones, so a re-upload always picks up new `chunk_size`/`chunk_overlap` values.
+**Upgrading from an older version** — on first launch, an existing `chroma_db/` is migrated automatically to cosine similarity (a one-time re-embedding of the stored chunks). Older versions stored uploads under a `temp_` prefix (e.g. `temp_report.pdf`); delete those on the Documents page and re-upload to get clean names. Documents indexed before the switch to 200-token chunks keep their old, larger chunks (whose second half isn't searchable) until you re-upload them. Re-uploading an unchanged file is normally skipped, but not when the chunk settings it was indexed with differ from the current ones, so a re-upload always picks up new `chunk_size`/`chunk_overlap` values.
 
 **Out of memory** — reduce `max_new_tokens`, close other GPU apps, or switch to a smaller model.
 
