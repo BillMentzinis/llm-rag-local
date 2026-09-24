@@ -27,6 +27,6 @@ dependencies:
     - chromadb
     - pymupdf
     # App
-    - streamlit>=1.51         # separate light/dark themes in .streamlit/config.toml
+    - streamlit>=1.56         # st.iframe (copy button); separate light/dark themes
     # Tests
     - pytest

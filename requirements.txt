@@ -7,7 +7,7 @@
 #
 # To also run Hugging Face models inside the app (NVIDIA GPU), use
 # environment.yml instead, or add: pip install accelerate bitsandbytes
-streamlit>=1.51
+streamlit>=1.56
 ollama>=0.4
 chromadb
 sentence-transformers

@@ -7,7 +7,6 @@ import html
 import itertools
 import tempfile
 import streamlit as st
-import streamlit.components.v1 as components
 from datetime import datetime
 from typing import Optional
 
@@ -31,8 +30,10 @@ STOPPED_NOTE = "Stopped before the answer was complete."
 # Neutral icon avatars that suit the theme (Streamlit's defaults are red and orange)
 AVATARS = {"user": ":material/person:", "assistant": ":material/neurology:"}
 
-# A copy button in a component iframe (the only place a click can reach the
-# clipboard). The text travels in an HTML-escaped data attribute, never as code.
+# A copy button in an st.iframe (the only place a click can reach the clipboard:
+# the iframe allows scripts, same-origin access and clipboard-write). The HTML
+# starts with markup, so st.iframe always treats it as HTML (srcdoc), never as a
+# URL or file path. The text travels in an HTML-escaped data attribute, never as code.
 # It borrows the app's text colour, accent and font so it matches the theme,
 # and falls back to execCommand where navigator.clipboard is unavailable (plain
 # http on a LAN address, which isn't a secure context).
@@ -700,8 +701,8 @@ def render_message_actions(message: dict, can_regenerate: bool):
     """
     with st.container(horizontal=True, vertical_alignment="center", gap="small"):
         if message["content"]:
-            components.html(COPY_BUTTON_HTML.format(text=html.escape(message["content"], quote=True)),
-                            width=70, height=40)
+            st.iframe(COPY_BUTTON_HTML.format(text=html.escape(message["content"], quote=True)),
+                      width=70, height=40)
         if can_regenerate:
             st.button("Regenerate", key="regenerate", icon=":material/refresh:", type="tertiary",
                       on_click=request_regenerate, help="Answer the last question again")
