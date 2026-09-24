@@ -2,8 +2,8 @@
 A small stand-in for an Ollama server, for tests.
 
 It serves the endpoints the app uses: /api/tags (installed models), /api/ps
-(loaded models) and /api/chat (streamed as newline-delimited JSON, like
-Ollama). It records each chat request and notices when a client disconnects
+(loaded models), /api/show (model details) and /api/chat (streamed as
+newline-delimited JSON, like Ollama). It records each chat request and notices when a client disconnects
 mid-stream, which is how Ollama learns to stop generating.
 
 Run it on its own to point the app at it:
@@ -25,7 +25,7 @@ class FakeOllama:
     """Fake Ollama server running in a background thread."""
 
     def __init__(self, models=("llama3.1:8b", "qwen2.5:7b"), words=None, delay=0.0,
-                 size_vram=4.5 * GIB, fail_after=None, port=0, log=False):
+                 size_vram=4.5 * GIB, fail_after=None, port=0, log=False, context_length=131072):
         """
         Args:
             models: Model names it reports as installed
@@ -35,6 +35,7 @@ class FakeOllama:
             fail_after: Send an error line after this many chunks
             port: Port to listen on (0 picks a free one)
             log: Print chat requests and disconnects
+            context_length: Context window /api/show reports for every model
         """
         self.models = list(models)
         self.words = words or ["Hello", "from", "the", "fake", "Ollama", "server."]
@@ -42,6 +43,7 @@ class FakeOllama:
         self.size_vram = size_vram
         self.fail_after = fail_after
         self.log = log
+        self.context_length = context_length
         self.requests = []           # JSON bodies of /api/chat requests
         self.loaded = set()          # models that have answered a chat (shown by /api/ps)
         self.chunks_sent = 0         # chunks of the last answer that reached the client
@@ -87,10 +89,17 @@ class FakeOllama:
                     self._json(404, {"error": "not found"})
 
             def do_POST(self):
+                request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if self.path == "/api/show":
+                    if request["model"] not in fake.models:
+                        self._json(404, {"error": f"model '{request['model']}' not found"})
+                    else:
+                        self._json(200, {"model_info": {"general.architecture": "llama",
+                                                        "llama.context_length": fake.context_length}})
+                    return
                 if self.path != "/api/chat":
                     self._json(404, {"error": "not found"})
                     return
-                request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 fake.requests.append(request)
                 model = request["model"]
                 if fake.log:

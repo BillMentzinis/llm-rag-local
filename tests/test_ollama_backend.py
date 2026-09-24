@@ -39,7 +39,7 @@ def test_generation_settings_become_ollama_options(fake):
     list(OllamaBackend("llama3.1:8b", host=fake.url).stream_chat(MESSAGES, config))
 
     assert fake.requests[0]["options"] == {"num_predict": 7, "temperature": 0.3, "top_p": 0.8,
-                                           "top_k": 20, "repeat_penalty": 1.2}
+                                           "top_k": 20, "repeat_penalty": 1.2, "num_ctx": 8192}
 
 
 def test_greedy_decoding_means_temperature_zero():
@@ -142,3 +142,19 @@ def test_hugging_face_model_without_a_gpu_fails_before_downloading(monkeypatch):
 
     with pytest.raises(RuntimeError, match="need an NVIDIA GPU"):
         llm_backends.TransformersBackend("meta-llama/Llama-3.1-8B-Instruct")
+
+
+def test_context_window_is_capped_at_the_models_own_limit(fake):
+    fake.context_length = 4096
+    backend = OllamaBackend("llama3.1:8b", host=fake.url)
+
+    list(backend.stream_chat(MESSAGES, {}))
+
+    assert backend.context_window() == 4096
+    assert fake.requests[0]["options"]["num_ctx"] == 4096
+
+
+def test_context_window_falls_back_to_the_configured_size(fake):
+    # Ollama doesn't know the model (or isn't reachable): use OLLAMA_CONFIG's num_ctx
+    assert OllamaBackend("mistral:7b", host=fake.url).context_window() == 8192
+    assert OllamaBackend("llama3.1:8b", host=f"http://127.0.0.1:{_unused_port()}").context_window() == 8192

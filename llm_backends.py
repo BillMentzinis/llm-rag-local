@@ -47,6 +47,10 @@ class LLMBackend:
         """Count (or estimate) the tokens in a text."""
         return len(text) // 4
 
+    def context_window(self) -> int:
+        """How many tokens the model can take in at once, prompt and answer together."""
+        return 4096
+
     def status(self) -> str:
         """Short description of where the model is running, for the status bar."""
         return ""
@@ -107,12 +111,7 @@ class TransformersBackend(LLMBackend):
                 return torch.full((input_ids.shape[0],), stop.is_set(),
                                   dtype=torch.bool, device=input_ids.device)
 
-        formatted_prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-        inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(self.model.device)
+        inputs = self.tokenizer(self._format_prompt(messages), return_tensors="pt").to(self.model.device)
 
         streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
         stop = Event()
@@ -145,6 +144,32 @@ class TransformersBackend(LLMBackend):
             # before anything else is generated
             stop.set()
             thread.join()
+
+    def _format_prompt(self, messages: List[Dict]) -> str:
+        """
+        Apply the model's chat template.
+
+        Some templates reject a system message; the system prompt is then put
+        at the start of the first user message instead.
+        """
+        try:
+            return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        except Exception:
+            if len(messages) < 2 or messages[0]["role"] != "system":
+                raise
+            system, first, rest = messages[0], messages[1], messages[2:]
+            merged = {"role": first["role"], "content": f"{system['content']}\n\n{first['content']}"}
+            return self.tokenizer.apply_chat_template([merged] + rest, tokenize=False, add_generation_prompt=True)
+
+    def context_window(self) -> int:
+        """The model's maximum sequence length (from its config or tokenizer)."""
+        limits = [
+            getattr(getattr(self.model, "config", None), "max_position_embeddings", None),
+            getattr(self.tokenizer, "model_max_length", None),
+        ]
+        # Tokenizers without a limit report a huge placeholder value
+        limits = [n for n in limits if isinstance(n, int) and 0 < n < 10 ** 7]
+        return min(limits) if limits else super().context_window()
 
     def count_tokens(self, text: str) -> int:
         """Count tokens with the model's tokenizer."""
@@ -182,6 +207,7 @@ class OllamaBackend(LLMBackend):
         self.display_name = model
         self.host = host or OLLAMA_CONFIG["host"]
         self.client = ollama.Client(host=self.host)
+        self._context_window = None
 
     def stream_chat(self, messages: List[Dict], generation_config: Dict) -> Iterator[str]:
         """
@@ -199,7 +225,7 @@ class OllamaBackend(LLMBackend):
                 model=self.model,
                 messages=messages,
                 stream=True,
-                options=ollama_options(generation_config)
+                options={**ollama_options(generation_config), "num_ctx": self.context_window()}
             )
             for part in stream:
                 if part.message.content:
@@ -220,6 +246,21 @@ class OllamaBackend(LLMBackend):
         finally:
             if stream is not None:
                 stream.close()
+
+    def context_window(self) -> int:
+        """
+        The context window requested from Ollama: OLLAMA_CONFIG's num_ctx, capped
+        at the model's own limit when Ollama reports it.
+        """
+        if self._context_window is not None:
+            return self._context_window
+        try:
+            info = self.client.show(self.model).modelinfo or {}
+        except Exception:
+            return OLLAMA_CONFIG["num_ctx"]  # not cached, so it's asked again later
+        native = next((v for k, v in info.items() if k.endswith(".context_length")), None)
+        self._context_window = min(OLLAMA_CONFIG["num_ctx"], int(native)) if native else OLLAMA_CONFIG["num_ctx"]
+        return self._context_window
 
     def status(self) -> str:
         """Where Ollama has the model loaded, e.g. "Ollama · 4.9 GB VRAM"."""

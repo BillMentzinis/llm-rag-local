@@ -13,7 +13,7 @@ from typing import Optional
 
 from config import (
     GENERATION_CONFIG, UI_CONFIG, RAG_CONFIG, SUPPORTED_EXTENSIONS, AVAILABLE_MODELS,
-    DEFAULT_MODEL, OLLAMA_CONFIG
+    DEFAULT_MODEL, OLLAMA_CONFIG, CHAT_CONFIG
 )
 from llm_backends import (
     LLMBackend, OLLAMA_PREFIX, TRANSFORMERS_PREFIX, load_backend, release_all,
@@ -312,7 +312,8 @@ def render_chat_sidebar(pipeline: RAGPipeline):
                 step=50,
                 help="Maximum length of response"
             )
-            st.caption("Only the last 3 conversation turns are sent as context.")
+            st.caption(f"The model sees up to your last {CHAT_CONFIG['history_turns']} questions and "
+                       "answers, fewer if they don't fit its context window.")
 
         st.divider()
 
@@ -461,14 +462,7 @@ def summarize_document(filename: str, pipeline: RAGPipeline):
             return
 
         # Generate summary
-        gen_config = {
-            "max_new_tokens": 512,
-            "temperature": 0.6,  # Lower for more factual summary
-            "do_sample": True,
-            "top_p": 0.9,
-            "top_k": 50,
-            "repetition_penalty": 1.1,
-        }
+        gen_config = {**GENERATION_CONFIG, "temperature": 0.6}  # a little more focused for summaries
 
         result = pipeline.generate_response(
             query=summary_prompt,
@@ -753,15 +747,12 @@ def start_response(prompt: str, pipeline: RAGPipeline) -> dict:
     """
     # Prepare generation config
     gen_config = {
+        **GENERATION_CONFIG,
         "max_new_tokens": st.session_state.max_tokens,
         "temperature": st.session_state.temperature,
-        "do_sample": True,
-        "top_p": 0.9,
-        "top_k": 50,
-        "repetition_penalty": 1.1,
     }
 
-    # Format conversation history
+    # Earlier messages; the pipeline picks the recent complete question/answer pairs
     history = [
         {"role": msg["role"], "content": msg["content"]}
         for msg in st.session_state.messages[:-1]  # Exclude current message

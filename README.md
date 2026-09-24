@@ -148,8 +148,9 @@ The Documents page also lists what's indexed, and can **Summarize** a document i
 All parameters are in `config.py`:
 
 - **RAG**: `chunk_size` (200 tokens, overlap included), `chunk_overlap` (30), `top_k` (5), `min_similarity` (0.3, cosine similarity). The embedding model only reads the first 256 tokens of a chunk, so keep `chunk_size` below that if you raise it.
-- **Generation**: `temperature` (0.7), `top_p` (0.9), `max_new_tokens` (512)
-- **Models**: `DEFAULT_MODEL` (the model used on first launch; override with the `LLM_MODEL` environment variable, e.g. `ollama:llama3.1:8b` or `transformers:meta-llama/Llama-3.1-8B-Instruct`), `OLLAMA_CONFIG` (server address; override with `OLLAMA_HOST`), and `AVAILABLE_MODELS` (the Hugging Face models offered — add or remove models here)
+- **Generation**: `temperature` (0.7), `top_p` (0.9), `max_new_tokens` (512); the sidebar's sliders override temperature and max tokens
+- **Conversation**: `SYSTEM_PROMPT` (sent first in every conversation) and `CHAT_CONFIG`: `history_turns` (3 earlier question/answer pairs sent with each question) and `rag_context_tokens` (2048, the most tokens of document excerpts per question). If a prompt won't fit the model's context window, the oldest turns are dropped first, then the least relevant excerpts; the question itself is always sent
+- **Models**: `DEFAULT_MODEL` (the model used on first launch; override with the `LLM_MODEL` environment variable, e.g. `ollama:llama3.1:8b` or `transformers:meta-llama/Llama-3.1-8B-Instruct`), `OLLAMA_CONFIG` (server address, overridable with `OLLAMA_HOST`; and the context window requested from Ollama, 8192 tokens by default, overridable with `OLLAMA_NUM_CTX` — larger windows use more memory), and `AVAILABLE_MODELS` (the Hugging Face models offered — add or remove models here)
 
 ## Supported File Types
 
