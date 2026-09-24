@@ -5,10 +5,23 @@ Orchestrates document processing, retrieval, and generation for RAG functionalit
 
 import os
 import torch
-from typing import List, Dict, Optional, Any
+from threading import Event, Thread
+from typing import List, Dict, Optional, Any, Iterator
+from transformers import StoppingCriteria, StoppingCriteriaList, TextIteratorStreamer
 from document_processor import DocumentProcessor
 from vector_store_manager import VectorStoreManager
 from config import RAG_CONFIG, RAG_PROMPT_TEMPLATE, TOKEN_BUDGET
+
+
+class _StopOnEvent(StoppingCriteria):
+    """Stops generation once the event is set, e.g. when the reader abandons the stream."""
+
+    def __init__(self, event: Event):
+        self.event = event
+
+    def __call__(self, input_ids, scores, **kwargs):
+        return torch.full((input_ids.shape[0],), self.event.is_set(),
+                          dtype=torch.bool, device=input_ids.device)
 
 
 class RAGPipeline:
@@ -206,10 +219,14 @@ class RAGPipeline:
 
         return truncated
 
-    def generate_response(self, query: str, context_chunks: List[Dict] = None,
-                         history: List[Dict] = None, generation_config: Dict = None) -> Dict:
+    def stream_response(self, query: str, context_chunks: List[Dict] = None,
+                        history: List[Dict] = None, generation_config: Dict = None) -> Dict:
         """
-        Generate response with optional RAG context.
+        Start generating a response with optional RAG context, streaming its text.
+
+        Generation runs in a background thread and only starts once the stream
+        is iterated. Closing the stream early (or abandoning it, as happens when
+        Streamlit interrupts a script run) stops generation at the next token.
 
         Args:
             query: User query
@@ -218,7 +235,7 @@ class RAGPipeline:
             generation_config: Optional generation parameters override
 
         Returns:
-            Dictionary with response and metadata
+            Dictionary with "stream" (an iterator of text pieces) and metadata
         """
         # Truncate context to fit budget
         context_budget = TOKEN_BUDGET["rag_context"]
@@ -254,27 +271,74 @@ class RAGPipeline:
         # Tokenize
         inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(self.model.device)
 
-        # Generate
-        with torch.no_grad():
-            outputs = self.model.generate(
-                **inputs,
-                **generation_config,
-                pad_token_id=self.tokenizer.eos_token_id
-            )
-
-        # Decode response
-        response_text = self.tokenizer.decode(
-            outputs[0][inputs.input_ids.shape[1]:],
-            skip_special_tokens=True
-        )
-
         return {
-            "response": response_text,
+            "stream": self._stream_tokens(inputs, generation_config or {}),
             "sources": sources_used,
             "num_sources": len(sources_used),
             "prompt_tokens": inputs.input_ids.shape[1],
             "rag_enabled": len(sources_used) > 0
         }
+
+    def _stream_tokens(self, inputs: Any, generation_config: Dict) -> Iterator[str]:
+        """
+        Run model.generate in a background thread and yield decoded text as it arrives.
+
+        Args:
+            inputs: Tokenized prompt on the model's device
+            generation_config: Generation parameters
+
+        Yields:
+            Pieces of response text
+        """
+        streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
+        stop = Event()
+        errors = []
+
+        def generate():
+            try:
+                with torch.no_grad():  # grad mode is per thread
+                    self.model.generate(
+                        **inputs,
+                        **generation_config,
+                        pad_token_id=self.tokenizer.eos_token_id,
+                        streamer=streamer,
+                        stopping_criteria=StoppingCriteriaList([_StopOnEvent(stop)])
+                    )
+            except Exception as e:
+                errors.append(e)
+                streamer.end()  # unblock the reader
+
+        thread = Thread(target=generate, daemon=True)
+        thread.start()
+        try:
+            for text in streamer:
+                if text:
+                    yield text
+            if errors:
+                raise errors[0]
+        finally:
+            # Stop early if the reader went away, and wait so the GPU is free
+            # before anything else is generated
+            stop.set()
+            thread.join()
+
+    def generate_response(self, query: str, context_chunks: List[Dict] = None,
+                         history: List[Dict] = None, generation_config: Dict = None) -> Dict:
+        """
+        Generate a complete response with optional RAG context.
+
+        Args:
+            query: User query
+            context_chunks: Optional retrieved context chunks
+            history: Optional conversation history [{"role": "user/assistant", "content": "..."}]
+            generation_config: Optional generation parameters override
+
+        Returns:
+            Dictionary with response and metadata
+        """
+        result = self.stream_response(query, context_chunks, history, generation_config)
+        result["response"] = "".join(result.pop("stream"))
+        return result
 
     def generate_with_rag(self, query: str, history: List[Dict] = None,
                          top_k: int = None, generation_config: Dict = None,

@@ -3,8 +3,11 @@ Streamlit UI for RAG-Enabled Llama 3.2 3B Chat Application.
 """
 
 import os
+import html
+import itertools
 import tempfile
 import streamlit as st
+import streamlit.components.v1 as components
 import torch
 from datetime import datetime
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
@@ -20,6 +23,55 @@ from chat_manager import save_chat, load_chat, list_chats, delete_chat, auto_nam
 
 
 NO_CONTEXT_NOTE = "No relevant document context found, so this answer uses the model's general knowledge."
+STOPPED_NOTE = "Stopped before the answer was complete."
+
+# A copy button in a component iframe (the only place a click can reach the
+# clipboard). The text travels in an HTML-escaped data attribute, never as code.
+# It borrows the app's text colour and font so it matches the light/dark theme,
+# and falls back to execCommand where navigator.clipboard is unavailable (plain
+# http on a LAN address, which isn't a secure context).
+COPY_BUTTON_HTML = """
+<style>
+  body {{ margin: 0; overflow: hidden; }}
+  button {{
+    display: inline-flex; align-items: center; gap: 0.5rem; height: 2.5rem;
+    padding: 0; border: none; background: none; cursor: pointer;
+    font: 14px/1.6 "Source Sans", sans-serif; color: rgb(49, 51, 63);
+  }}
+  button:hover {{ color: rgb(255, 75, 75); }}
+  svg {{ width: 16px; height: 16px; fill: currentColor; }}
+</style>
+<button id="copy" data-text="{text}" title="Copy to clipboard">
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18q-.825 0-1.412-.587T7 16V4q0-.825.588-1.412T9 2h9q.825 0 1.413.588T20 4v12q0 .825-.587 1.413T18 18zm0-2h9V4H9zm-4 6q-.825 0-1.412-.587T3 20V7q0-.425.288-.712T4 6t.713.288T5 7v13h10q.425 0 .713.288T16 21t-.288.713T15 22zm4-6V4z"/></svg>
+  <span>Copy</span>
+</button>
+<script>
+  const button = document.getElementById("copy");
+  const label = button.querySelector("span");
+  try {{
+    const parentStyle = window.parent.getComputedStyle(window.parent.document.body);
+    button.style.color = parentStyle.color;
+    button.style.fontFamily = parentStyle.fontFamily;
+  }} catch (e) {{}}
+  button.addEventListener("click", async () => {{
+    const text = button.dataset.text;
+    let copied = false;
+    try {{
+      await navigator.clipboard.writeText(text);
+      copied = true;
+    }} catch (e) {{
+      const area = document.createElement("textarea");
+      area.value = text;
+      document.body.appendChild(area);
+      area.select();
+      copied = document.execCommand("copy");
+      area.remove();
+    }}
+    label.textContent = copied ? "Copied" : "Copy failed";
+    setTimeout(() => {{ label.textContent = "Copy"; }}, 1500);
+  }});
+</script>
+"""
 
 
 # Page configuration
@@ -447,69 +499,167 @@ def render_chat_interface(pipeline: RAGPipeline):
     else:
         st.info("RAG Mode: Disabled")
 
+    # Read the chat input first (it's pinned to the bottom wherever it's called),
+    # so the history knows whether a new answer is about to be generated
+    prompt = st.chat_input("Ask me anything...")
+    regenerate = st.session_state.pop("regenerate_requested", False)
+
     # Display chat history
-    for message in st.session_state.messages:
+    messages = st.session_state.messages
+    for i, message in enumerate(messages):
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            if message["role"] == "assistant":
+                is_latest = i == len(messages) - 1 and not prompt
+                render_assistant_details(message, can_regenerate=is_latest)
 
-            if message.get("rag_no_context"):
-                st.caption(NO_CONTEXT_NOTE)
-
-            # Show sources if available
-            if message["role"] == "assistant" and "sources" in message and message["sources"]:
-                with st.expander(f"Sources ({len(message['sources'])} chunks used)"):
-                    for i, source in enumerate(message["sources"]):
-                        st.markdown(f"**[{i+1}] {source['metadata']['filename']}** (Chunk {source['metadata']['chunk_index'] + 1}, Similarity: {source['similarity']:.2f})")
-                        st.text(source["text"][:200] + "..." if len(source["text"]) > 200 else source["text"])
-                        st.divider()
-
-    # Chat input
-    if prompt := st.chat_input("Ask me anything..."):
+    if prompt:
         # Add user message
         st.session_state.messages.append({"role": "user", "content": prompt})
 
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Generate response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                response_data = generate_response(prompt, pipeline)
+        respond(prompt, pipeline)
 
-                # Display response
-                st.markdown(response_data["response"])
-
-                rag_no_context = response_data.get("rag_attempted", False) and not response_data["sources"]
-                if rag_no_context:
-                    st.caption(NO_CONTEXT_NOTE)
-
-                # Display sources if RAG was used
-                if response_data["sources"]:
-                    with st.expander(f"Sources ({len(response_data['sources'])} chunks used)"):
-                        for i, source in enumerate(response_data["sources"]):
-                            st.markdown(f"**[{i+1}] {source['metadata']['filename']}** (Chunk {source['metadata']['chunk_index'] + 1}, Similarity: {source['similarity']:.2f})")
-                            st.text(source["text"][:200] + "..." if len(source["text"]) > 200 else source["text"])
-                            st.divider()
-
-        # Add assistant message
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": response_data["response"],
-            "sources": response_data["sources"],
-            "rag_no_context": rag_no_context
-        })
+    # Regenerate: the last answer was already removed, so answer the last question again
+    elif regenerate and messages and messages[-1]["role"] == "user":
+        respond(messages[-1]["content"], pipeline)
 
 
-def generate_response(prompt: str, pipeline: RAGPipeline) -> dict:
+def respond(prompt: str, pipeline: RAGPipeline):
     """
-    Generate response using RAG pipeline.
+    Generate and stream the assistant's answer to the last user message.
+
+    Args:
+        prompt: User prompt being answered (already the last message)
+        pipeline: RAG pipeline instance
+    """
+    # Generate response, streaming it as it's produced
+    with st.chat_message("assistant"):
+        message = {"role": "assistant", "content": "", "sources": []}
+        # Kept in session state so that if this run is interrupted (the Stop
+        # button or any other click), the partial answer survives the rerun
+        st.session_state.pending_response = message
+
+        body = st.container()
+        stop_slot = st.empty()
+        stop_slot.button("Stop generating", key="stop_generation")
+
+        stream = None
+        try:
+            with body:
+                with st.spinner("Thinking..."):
+                    response_data = start_response(prompt, pipeline)
+                    message["sources"] = response_data["sources"]
+                    message["rag_no_context"] = response_data["rag_attempted"] and not response_data["sources"]
+                    stream = response_data["stream"]
+                    first_piece = next(stream, "")
+                st.write_stream(record_stream(itertools.chain([first_piece], stream), message))
+        except Exception as e:
+            message["error"] = str(e)
+        finally:
+            # Also runs when Streamlit interrupts the run, which stops generation
+            if stream is not None:
+                stream.close()
+
+        stop_slot.empty()
+        del st.session_state.pending_response
+        render_assistant_details(message, can_regenerate=True)
+
+    st.session_state.messages.append(message)
+
+
+def record_stream(pieces, message: dict):
+    """
+    Pass streamed text through while accumulating it into the message.
+
+    Args:
+        pieces: Iterator of text pieces
+        message: Message dictionary whose content is extended in place
+
+    Yields:
+        The same text pieces
+    """
+    for piece in pieces:
+        message["content"] += piece
+        yield piece
+
+
+def recover_interrupted_response():
+    """
+    Keep a response whose generation was interrupted by a rerun.
+
+    Runs before anything else renders, so the sidebar's chat actions see it.
+    """
+    message = st.session_state.pop("pending_response", None)
+    if message is not None:
+        message["stopped"] = True
+        st.session_state.messages.append(message)
+
+
+def request_regenerate():
+    """Drop the last answer so the next run generates a new one (button callback)."""
+    messages = st.session_state.messages
+    if messages and messages[-1]["role"] == "assistant":
+        messages.pop()
+        st.session_state.regenerate_requested = True
+
+
+def render_message_actions(message: dict, can_regenerate: bool):
+    """
+    Render the Copy and Regenerate buttons under an assistant message.
+
+    Args:
+        message: Assistant message dictionary
+        can_regenerate: Whether to offer Regenerate (only for the latest answer)
+    """
+    with st.container(horizontal=True, vertical_alignment="center", gap="small"):
+        if message["content"]:
+            components.html(COPY_BUTTON_HTML.format(text=html.escape(message["content"], quote=True)),
+                            width=70, height=40)
+        if can_regenerate:
+            st.button("Regenerate", key="regenerate", icon=":material/refresh:", type="tertiary",
+                      on_click=request_regenerate, help="Answer the last question again")
+
+
+def render_assistant_details(message: dict, can_regenerate: bool = False):
+    """
+    Render the notes, sources and actions shown under an assistant message.
+
+    Args:
+        message: Assistant message dictionary
+        can_regenerate: Whether to offer Regenerate (only for the latest answer)
+    """
+    if message.get("error"):
+        st.error(f"Generation failed: {message['error']}")
+    elif message.get("stopped"):
+        st.caption(STOPPED_NOTE)
+
+    if message.get("rag_no_context"):
+        st.caption(NO_CONTEXT_NOTE)
+
+    # Show sources if available
+    if message.get("sources"):
+        with st.expander(f"Sources ({len(message['sources'])} chunks used)"):
+            for i, source in enumerate(message["sources"]):
+                st.markdown(f"**[{i+1}] {source['metadata']['filename']}** (Chunk {source['metadata']['chunk_index'] + 1}, Similarity: {source['similarity']:.2f})")
+                st.text(source["text"][:200] + "..." if len(source["text"]) > 200 else source["text"])
+                st.divider()
+
+    render_message_actions(message, can_regenerate)
+
+
+def start_response(prompt: str, pipeline: RAGPipeline) -> dict:
+    """
+    Retrieve context if RAG is on, and start streaming the response.
 
     Args:
         prompt: User prompt
         pipeline: RAG pipeline instance
 
     Returns:
-        Response data dictionary
+        Response data dictionary with a "stream" of text pieces
     """
     # Prepare generation config
     gen_config = {
@@ -552,7 +702,7 @@ def generate_response(prompt: str, pipeline: RAGPipeline) -> dict:
             )
 
         # Generate with context
-        result = pipeline.generate_response(
+        result = pipeline.stream_response(
             query=prompt,
             context_chunks=context_chunks,
             history=history,
@@ -560,11 +710,12 @@ def generate_response(prompt: str, pipeline: RAGPipeline) -> dict:
         )
         result["rag_attempted"] = True
     else:
-        result = pipeline.generate_response(
+        result = pipeline.stream_response(
             query=prompt,
             history=history,
             generation_config=gen_config
         )
+        result["rag_attempted"] = False
 
     return result
 
@@ -575,6 +726,7 @@ def main():
     """
     # Initialize session state
     initialize_session_state()
+    recover_interrupted_response()
 
     # Load model and pipeline
     try:

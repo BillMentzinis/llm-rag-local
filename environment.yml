@@ -25,7 +25,7 @@ dependencies:
     - ipywidgets
     - sentence-transformers
     - chromadb
-    - streamlit
+    - streamlit>=1.48  # horizontal containers, width="stretch"
     - pymupdf
     - tiktoken
     - pytest
