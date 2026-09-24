@@ -164,22 +164,102 @@ def initialize_session_state():
     if "selected_model" not in st.session_state:
         st.session_state.selected_model = "meta-llama/Llama-3.1-8B-Instruct"
 
+    if "uploader_key" not in st.session_state:
+        st.session_state.uploader_key = 0
 
-def render_sidebar(pipeline: RAGPipeline):
+
+def notify(message: str, icon: str = None, kind: str = "success"):
     """
-    Render sidebar with document upload and settings.
+    Queue a message for the next run (anything shown before st.rerun() would be wiped).
+
+    Messages are shown inline rather than as toasts: a toast sent while the
+    previous one is still on screen is silently dropped by Streamlit.
+
+    Args:
+        message: Text to show
+        icon: Optional Material icon, e.g. ":material/check:"
+        kind: "success", "info" or "error"
+    """
+    st.session_state.setdefault("notifications", []).append((kind, message, icon))
+
+
+def show_notifications():
+    """Show the messages queued with notify(); they clear on the next interaction."""
+    for kind, message, icon in st.session_state.pop("notifications", []):
+        getattr(st, kind)(message, icon=icon)
+
+
+def current_chat_title() -> str:
+    """Name of the current chat: its saved name, or one derived from the first question."""
+    if st.session_state.current_chat_name:
+        return st.session_state.current_chat_name
+    first_user = next((m["content"] for m in st.session_state.messages if m["role"] == "user"), None)
+    return auto_name_from_message(first_user) if first_user else datetime.now().strftime("Chat_%Y%m%d_%H%M%S")
+
+
+def save_current_chat(announce: bool = True):
+    """Save the current chat, if it has any messages (button callback)."""
+    # Callbacks run before the script, so an answer interrupted by this very
+    # click hasn't been recovered yet; do it now so it's saved with its chat
+    recover_interrupted_response()
+    if not st.session_state.messages:
+        return
+    name = current_chat_title()
+    st.session_state.current_chat_name = name
+    save_chat(name, st.session_state.messages)
+    if announce:
+        notify(f"Saved \u201c{name}\u201d", ":material/check:")
+
+
+def start_new_chat():
+    """Save the current chat and start an empty one (button callback)."""
+    save_current_chat(announce=False)
+    st.session_state.messages = []
+    st.session_state.current_chat_name = None
+
+
+def open_chat(chat: dict):
+    """Switch to a saved chat, saving the current one first (button callback)."""
+    if chat["name"] == st.session_state.current_chat_name:
+        return
+    loaded = load_chat(chat["filepath"])
+    if loaded is None:
+        notify("Could not load that chat.", ":material/error:", kind="error")
+        return
+    save_current_chat(announce=False)
+    st.session_state.messages = loaded
+    st.session_state.current_chat_name = chat["name"]
+
+
+def remove_chat(chat: dict):
+    """Delete a saved chat (button callback)."""
+    delete_chat(chat["filepath"])
+    if st.session_state.current_chat_name == chat["name"]:
+        st.session_state.current_chat_name = None
+    notify(f"Deleted \u201c{chat['name']}\u201d", ":material/delete:")
+
+
+def render_chat_sidebar(pipeline: RAGPipeline):
+    """
+    Render the chat page's sidebar: chat actions, settings and saved chats.
 
     Args:
         pipeline: RAG pipeline instance
     """
     with st.sidebar:
+        with st.container(horizontal=True):
+            st.button("New chat", icon=":material/add:", type="primary", width="stretch",
+                      on_click=start_new_chat, help="Save this chat and start a new one")
+            st.button("Save", icon=":material/save:", on_click=save_current_chat,
+                      disabled=not st.session_state.messages, help="Save this chat")
+        show_notifications()
+
         # Model selector
-        st.subheader("Model")
         model_keys = list(AVAILABLE_MODELS.keys())
         display_names = [AVAILABLE_MODELS[m]["display_name"] for m in model_keys]
         current_idx = model_keys.index(st.session_state.selected_model)
         chosen_display = st.selectbox(
-            "LLM Model",
+            "Model",
             options=display_names,
             index=current_idx,
             help="Switching models clears the cache and reloads the model."
@@ -191,106 +271,37 @@ def render_sidebar(pipeline: RAGPipeline):
             torch.cuda.empty_cache()
             st.rerun()
 
-        st.divider()
-        st.title("Document Management")
-
-        # File uploader
-        uploaded_files = st.file_uploader(
-            "Upload Documents",
-            type=list(ext.strip(".") for ext in SUPPORTED_EXTENSIONS.keys()),
-            accept_multiple_files=True,
-            help=f"Supported formats: {', '.join(SUPPORTED_EXTENSIONS.values())}"
+        # RAG settings
+        st.session_state.rag_enabled = st.toggle(
+            "Answer from documents",
+            value=st.session_state.rag_enabled,
+            help="Use your indexed documents as context for answers (RAG)"
         )
 
-        # Process uploaded files
-        if uploaded_files:
-            if st.button("Process Documents", type="primary"):
-                process_uploaded_files(uploaded_files, pipeline)
-
-        st.divider()
-
-        # Display indexed documents
-        st.subheader("Indexed Documents")
-        documents = pipeline.get_documents()
-
-        if documents:
-            # Create DataFrame for display
-            doc_data = []
-            for doc in documents:
-                doc_data.append({
-                    "Filename": doc["filename"],
-                    "Type": doc["file_type"],
-                    "Chunks": doc["chunk_count"]
-                })
-
-            st.dataframe(doc_data, width='stretch', hide_index=True)
-
-            # Document actions
-            with st.expander("Document Actions"):
-                selected_doc = st.selectbox(
-                    "Select document",
-                    options=[doc["filename"] for doc in documents],
-                    key="doc_action_selector"
+        if st.session_state.rag_enabled:
+            documents = pipeline.get_documents()
+            if documents:
+                doc_options = ["All Documents"] + [doc["filename"] for doc in documents]
+                st.session_state.selected_document = st.selectbox(
+                    "Focus on document",
+                    options=doc_options,
+                    index=doc_options.index(st.session_state.selected_document) if st.session_state.selected_document in doc_options else 0,
+                    help="Retrieve chunks only from selected document, or all documents"
                 )
 
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button("Summarize", key="summarize_btn"):
-                        summarize_document(selected_doc, pipeline)
-                with col2:
-                    if st.button("Delete", key="delete_btn"):
-                        count = pipeline.delete_document(selected_doc)
-                        st.success(f"Deleted {count} chunks from {selected_doc}")
-                        st.rerun()
-
-            # Document management buttons
-            if st.button("Clear All Documents"):
-                count = pipeline.clear_all_documents()
-                st.session_state.document_summaries.clear()
-                st.success(f"Cleared {count} chunks")
-                st.rerun()
-
-            # Show stats
-            with st.expander("Vector Store Stats"):
-                stats = pipeline.get_stats()
-                st.write(f"Total chunks: {stats['vector_store']['total_chunks']}")
-                st.write(f"Total documents: {stats['vector_store']['total_documents']}")
-                st.write(f"Embedding model: {stats['vector_store']['embedding_model']}")
-                st.write(f"Embedding dimension: {stats['vector_store']['embedding_dimension']}")
-        else:
-            st.info("No documents indexed yet. Upload files above to get started.")
-
-        st.divider()
-
-        # RAG Settings
-        st.subheader("Settings")
-
-        st.session_state.rag_enabled = st.checkbox(
-            "Enable RAG",
-            value=st.session_state.rag_enabled,
-            help="Use document context to enhance responses"
-        )
-
-        if st.session_state.rag_enabled and not pipeline.vector_store.is_empty():
-            # Document selector
-            doc_options = ["All Documents"] + [doc["filename"] for doc in documents]
-            st.session_state.selected_document = st.selectbox(
-                "Focus on Document",
-                options=doc_options,
-                index=doc_options.index(st.session_state.selected_document) if st.session_state.selected_document in doc_options else 0,
-                help="Retrieve chunks only from selected document, or all documents"
-            )
-
-            st.session_state.top_k = st.slider(
-                "Context Chunks",
-                min_value=1,
-                max_value=10,
-                value=st.session_state.top_k,
-                help="Number of document chunks to retrieve"
-            )
+                st.session_state.top_k = st.slider(
+                    "Context chunks",
+                    min_value=1,
+                    max_value=10,
+                    value=st.session_state.top_k,
+                    help="Number of document chunks to retrieve"
+                )
+            else:
+                st.caption("No documents indexed yet.")
+                st.page_link(PAGES["documents"], label="Add documents", icon=":material/upload_file:")
 
         # Generation settings
-        with st.expander("Generation Settings"):
+        with st.expander("Generation settings"):
             st.session_state.temperature = st.slider(
                 "Temperature",
                 min_value=0.1,
@@ -301,73 +312,121 @@ def render_sidebar(pipeline: RAGPipeline):
             )
 
             st.session_state.max_tokens = st.slider(
-                "Max Tokens",
+                "Max tokens",
                 min_value=50,
                 max_value=2048,
                 value=st.session_state.max_tokens,
                 step=50,
                 help="Maximum length of response"
             )
+            st.caption("Only the last 3 conversation turns are sent as context.")
 
         st.divider()
 
-        # Chat history
-        st.subheader("Chat History")
-        st.caption("Only the last 3 conversation turns are sent as context.")
-
-        col_new, col_save = st.columns(2)
-        with col_new:
-            if st.button("New Chat", type="secondary", use_container_width=False):
-                if st.session_state.messages:
-                    name = st.session_state.current_chat_name
-                    if name is None:
-                        first_user = next(
-                            (m["content"] for m in st.session_state.messages if m["role"] == "user"),
-                            None
-                        )
-                        name = auto_name_from_message(first_user) if first_user else \
-                               datetime.now().strftime("Chat_%Y%m%d_%H%M%S")
-                    save_chat(name, st.session_state.messages)
-                st.session_state.messages = []
-                st.session_state.current_chat_name = None
-                st.rerun()
-
-        with col_save:
-            if st.session_state.messages:
-                if st.button("Save Chat", type="primary", use_container_width=False):
-                    name = st.session_state.current_chat_name
-                    if name is None:
-                        first_user = next(
-                            (m["content"] for m in st.session_state.messages if m["role"] == "user"),
-                            None
-                        )
-                        name = auto_name_from_message(first_user) if first_user else \
-                               datetime.now().strftime("Chat_%Y%m%d_%H%M%S")
-                        st.session_state.current_chat_name = name
-                    save_chat(name, st.session_state.messages)
-                    st.success(f"Saved: {name}")
-
+        # Saved chats
+        st.subheader("Chats")
         saved = list_chats()
-        if saved:
-            with st.expander(f"Saved Chats ({len(saved)})", expanded=False):
-                for chat in saved:
-                    col1, col2 = st.columns([4, 1])
-                    with col1:
-                        label = f"{chat['name']} ({chat['message_count']} msgs)"
-                        if st.button(label, key=f"load_{chat['filepath']}"):
-                            loaded = load_chat(chat["filepath"])
-                            if loaded is not None:
-                                st.session_state.messages = loaded
-                                st.session_state.current_chat_name = chat["name"]
-                                st.rerun()
-                            else:
-                                st.error("Could not load chat.")
-                    with col2:
-                        if st.button("X", key=f"del_{chat['filepath']}"):
-                            delete_chat(chat["filepath"])
-                            if st.session_state.current_chat_name == chat["name"]:
-                                st.session_state.current_chat_name = None
-                            st.rerun()
+        if not saved:
+            st.caption("Saved chats will appear here.")
+        for chat in saved:
+            is_current = chat["name"] == st.session_state.current_chat_name
+            label = chat["name"] if len(chat["name"]) <= 30 else chat["name"][:28].rstrip() + "\u2026"
+            with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
+                st.button(label, key=f"load_{chat['filepath']}", type="secondary" if is_current else "tertiary",
+                          on_click=open_chat, args=(chat,),
+                          help=f"{chat['name']} \u00b7 {chat['message_count']} messages")
+                st.button(":material/delete:", key=f"del_{chat['filepath']}", type="tertiary",
+                          on_click=remove_chat, args=(chat,), help="Delete this chat")
+
+        st.divider()
+        st.caption("Local LLM with RAG | Powered by Streamlit")
+
+
+def format_timestamp(timestamp: str) -> str:
+    """Format an ISO timestamp for display, or return it unchanged if it can't be parsed."""
+    try:
+        return datetime.fromisoformat(timestamp).strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return timestamp or ""
+
+
+def render_documents_page(pipeline: RAGPipeline):
+    """
+    Render the documents page: upload, the index's contents, and document actions.
+
+    Args:
+        pipeline: RAG pipeline instance
+    """
+    st.title("Documents")
+    st.caption("Indexed documents are used as context when **Answer from documents** is on in the chat.")
+    show_notifications()
+
+    # Upload
+    with st.container(border=True):
+        uploaded_files = st.file_uploader(
+            "Add documents",
+            type=list(ext.strip(".") for ext in SUPPORTED_EXTENSIONS.keys()),
+            accept_multiple_files=True,
+            key=f"uploader_{st.session_state.uploader_key}",
+            help=f"Supported formats: {', '.join(SUPPORTED_EXTENSIONS.values())}"
+        )
+        if uploaded_files and st.button("Process documents", type="primary", icon=":material/upload:"):
+            process_uploaded_files(uploaded_files, pipeline)
+
+        # Results of the last upload, shown once after the rerun
+        for result in st.session_state.pop("ingest_results", []):
+            if not result["success"]:
+                st.error(result["message"], icon=":material/error:")
+            elif result.get("skipped"):
+                st.info(result["message"], icon=":material/check:")
+            else:
+                st.success(result["message"], icon=":material/check_circle:")
+
+    documents = pipeline.get_documents()
+    if not documents:
+        st.info("No documents indexed yet. Add some above to get started.", icon=":material/info:")
+        return
+
+    stats = pipeline.get_stats()["vector_store"]
+    with st.container(horizontal=True):
+        st.metric("Documents", stats["total_documents"])
+        st.metric("Chunks", stats["total_chunks"])
+
+    st.dataframe(
+        [
+            {
+                "Document": doc["filename"],
+                "Type": doc["file_type"],
+                "Chunks": doc["chunk_count"],
+                "Added": format_timestamp(doc["upload_timestamp"]),
+            }
+            for doc in documents
+        ],
+        width="stretch",
+        hide_index=True
+    )
+    st.caption(f"Embedded with {stats['embedding_model']} ({stats['embedding_dimension']} dimensions)")
+
+    # Document actions
+    with st.container(horizontal=True, vertical_alignment="bottom"):
+        selected_doc = st.selectbox(
+            "Document",
+            options=[doc["filename"] for doc in documents],
+            key="doc_action_selector"
+        )
+        if st.button("Summarize", icon=":material/summarize:", key="summarize_btn"):
+            summarize_document(selected_doc, pipeline)
+        if st.button("Delete", icon=":material/delete:", key="delete_btn"):
+            count = pipeline.delete_document(selected_doc)
+            notify(f"Deleted {selected_doc} ({count} chunks)", ":material/delete:")
+            st.rerun()
+        with st.popover("Clear all", icon=":material/delete_sweep:"):
+            st.markdown(f"Remove all **{len(documents)}** documents from the index? This can't be undone.")
+            if st.button("Clear all documents", type="primary", key="confirm_clear"):
+                count = pipeline.clear_all_documents()
+                st.session_state.document_summaries.clear()
+                notify(f"Cleared all documents ({count} chunks)", ":material/delete_sweep:")
+                st.rerun()
 
 
 def summarize_document(filename: str, pipeline: RAGPipeline):
@@ -431,9 +490,7 @@ def summarize_document(filename: str, pipeline: RAGPipeline):
             "sources": context_chunks
         })
 
-        # Show success message
-        st.success(f"Summary generated for {filename} - check the chat!")
-        st.rerun()
+        st.switch_page(PAGES["chat"])
 
 
 def process_uploaded_files(uploaded_files, pipeline: RAGPipeline):
@@ -444,14 +501,14 @@ def process_uploaded_files(uploaded_files, pipeline: RAGPipeline):
         uploaded_files: List of uploaded file objects
         pipeline: RAG pipeline instance
     """
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    progress_bar = st.progress(0.0)
+    results = []
 
     for i, uploaded_file in enumerate(uploaded_files):
         # Keep only the base name so the upload can't escape the temp directory;
         # the file keeps its original name, which becomes the document's name
         filename = os.path.basename(uploaded_file.name)
-        status_text.text(f"Processing {filename}...")
+        progress_bar.progress(i / len(uploaded_files), text=f"Processing {filename}...")
 
         try:
             with tempfile.TemporaryDirectory() as temp_dir:
@@ -460,20 +517,16 @@ def process_uploaded_files(uploaded_files, pipeline: RAGPipeline):
                     f.write(uploaded_file.getbuffer())
 
                 # Process with pipeline (skips files that are indexed and unchanged)
-                result = pipeline.ingest_document(temp_path)
-
-            if result["success"]:
-                st.success(result["message"])
-            else:
-                st.error(result["message"])
+                results.append(pipeline.ingest_document(temp_path))
 
         except Exception as e:
-            st.error(f"Error processing {filename}: {str(e)}")
+            results.append({"success": False, "message": f"Error processing {filename}: {str(e)}"})
 
-        # Update progress
-        progress_bar.progress((i + 1) / len(uploaded_files))
+    progress_bar.progress(1.0, text="Processing complete!")
 
-    status_text.text("Processing complete!")
+    # Show the results after the rerun, and give the uploader a new key to clear it
+    st.session_state.ingest_results = results
+    st.session_state.uploader_key += 1
     st.rerun()
 
 
@@ -495,7 +548,7 @@ def render_chat_interface(pipeline: RAGPipeline):
         else:
             st.info(f"RAG Mode: Active | {doc_count} documents indexed")
     elif st.session_state.rag_enabled and pipeline.vector_store.is_empty():
-        st.warning("RAG enabled but no documents indexed. Upload documents in the sidebar.")
+        st.warning("RAG enabled but no documents indexed. Add some on the Documents page.")
     else:
         st.info("RAG Mode: Disabled")
 
@@ -720,6 +773,37 @@ def start_response(prompt: str, pipeline: RAGPipeline) -> dict:
     return result
 
 
+def get_pipeline() -> RAGPipeline:
+    """
+    Load the selected model and the RAG pipeline (both cached), stopping the page on failure.
+
+    Returns:
+        RAGPipeline instance
+    """
+    try:
+        model, tokenizer = load_model_and_tokenizer(st.session_state.selected_model)
+        return initialize_rag_pipeline(st.session_state.selected_model, model, tokenizer)
+    except Exception as e:
+        st.error(f"Failed to initialize application: {str(e)}")
+        st.stop()
+
+
+def chat_page():
+    """The chat page."""
+    pipeline = get_pipeline()
+    render_chat_sidebar(pipeline)
+    render_chat_interface(pipeline)
+
+
+def documents_page():
+    """The documents page."""
+    render_documents_page(get_pipeline())
+
+
+# Filled in by main() so pages can link to each other
+PAGES = {}
+
+
 def main():
     """
     Main application entry point.
@@ -728,21 +812,10 @@ def main():
     initialize_session_state()
     recover_interrupted_response()
 
-    # Load model and pipeline
-    try:
-        model, tokenizer = load_model_and_tokenizer(st.session_state.selected_model)
-        pipeline = initialize_rag_pipeline(st.session_state.selected_model, model, tokenizer)
-    except Exception as e:
-        st.error(f"Failed to initialize application: {str(e)}")
-        st.stop()
-
-    # Render UI
-    render_sidebar(pipeline)
-    render_chat_interface(pipeline)
-
-    # Footer
-    st.sidebar.divider()
-    st.sidebar.caption("Local LLM with RAG | Powered by Streamlit")
+    PAGES["chat"] = st.Page(chat_page, title="Chat", icon=":material/chat:", default=True)
+    PAGES["documents"] = st.Page(documents_page, title="Documents", icon=":material/description:",
+                                 url_path="documents")
+    st.navigation(list(PAGES.values()), position="top").run()
 
 
 if __name__ == "__main__":
