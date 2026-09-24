@@ -10,6 +10,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import torch
 from datetime import datetime
+from typing import Optional
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
 from config import (
@@ -25,9 +26,12 @@ from chat_manager import save_chat, load_chat, list_chats, delete_chat, auto_nam
 NO_CONTEXT_NOTE = "No relevant document context found, so this answer uses the model's general knowledge."
 STOPPED_NOTE = "Stopped before the answer was complete."
 
+# Neutral icon avatars that suit the theme (Streamlit's defaults are red and orange)
+AVATARS = {"user": ":material/person:", "assistant": ":material/neurology:"}
+
 # A copy button in a component iframe (the only place a click can reach the
 # clipboard). The text travels in an HTML-escaped data attribute, never as code.
-# It borrows the app's text colour and font so it matches the light/dark theme,
+# It borrows the app's text colour, accent and font so it matches the theme,
 # and falls back to execCommand where navigator.clipboard is unavailable (plain
 # http on a LAN address, which isn't a secure context).
 COPY_BUTTON_HTML = """
@@ -36,9 +40,9 @@ COPY_BUTTON_HTML = """
   button {{
     display: inline-flex; align-items: center; gap: 0.5rem; height: 2.5rem;
     padding: 0; border: none; background: none; cursor: pointer;
-    font: 14px/1.6 "Source Sans", sans-serif; color: rgb(49, 51, 63);
+    font: 14px/1.6 "Source Sans", sans-serif; color: var(--text, rgb(49, 51, 63));
   }}
-  button:hover {{ color: rgb(255, 75, 75); }}
+  button:hover {{ color: var(--accent, var(--text)); }}
   svg {{ width: 16px; height: 16px; fill: currentColor; }}
 </style>
 <button id="copy" data-text="{text}" title="Copy to clipboard">
@@ -49,9 +53,14 @@ COPY_BUTTON_HTML = """
   const button = document.getElementById("copy");
   const label = button.querySelector("span");
   try {{
-    const parentStyle = window.parent.getComputedStyle(window.parent.document.body);
-    button.style.color = parentStyle.color;
+    const doc = window.parent.document;
+    const parentStyle = window.parent.getComputedStyle(doc.body);
+    const root = document.documentElement.style;
+    root.setProperty("--text", parentStyle.color);
     button.style.fontFamily = parentStyle.fontFamily;
+    // The theme's accent colour, as used by the sidebar's primary button
+    const primary = doc.querySelector('[data-testid="stBaseButton-primary"]');
+    if (primary) root.setProperty("--accent", window.parent.getComputedStyle(primary).backgroundColor);
   }} catch (e) {{}}
   button.addEventListener("click", async () => {{
     const text = button.dataset.text;
@@ -530,6 +539,68 @@ def process_uploaded_files(uploaded_files, pipeline: RAGPipeline):
     st.rerun()
 
 
+def model_short_name() -> str:
+    """The selected model's display name without its size note, e.g. "Llama 3.1 8B"."""
+    return AVAILABLE_MODELS[st.session_state.selected_model]["display_name"].split(" (")[0]
+
+
+def gpu_status() -> Optional[str]:
+    """
+    Describe GPU memory in use, e.g. "RTX 3060 · 5.1 / 12.0 GB".
+
+    Returns:
+        The description, or None when no CUDA GPU is available
+    """
+    if not torch.cuda.is_available():
+        return None
+    try:
+        count = torch.cuda.device_count()
+        memory = [torch.cuda.mem_get_info(i) for i in range(count)]  # (free, total) bytes
+        name = torch.cuda.get_device_name(0).replace("NVIDIA ", "").replace("GeForce ", "")
+    except RuntimeError:
+        return None
+    used_gb = sum(total - free for free, total in memory) / 1024 ** 3
+    total_gb = sum(total for _, total in memory) / 1024 ** 3
+    label = name if count == 1 else f"{count} GPUs"
+    return f"{label} \u00b7 {used_gb:.1f} / {total_gb:.1f} GB"
+
+
+def render_status_bar(pipeline: RAGPipeline):
+    """
+    Render a compact row of badges: model, document (RAG) state and hardware.
+
+    Args:
+        pipeline: RAG pipeline instance
+    """
+    model_name = model_short_name()
+    with st.container(horizontal=True, gap="small"):
+        st.badge(model_name, icon=":material/neurology:", color="primary")
+
+        if not st.session_state.rag_enabled:
+            st.badge("Documents off", icon=":material/description:", color="gray")
+        else:
+            doc_count = len(pipeline.get_documents())
+            if doc_count == 0:
+                st.badge("No documents indexed", icon=":material/warning:", color="orange")
+            elif st.session_state.selected_document != "All Documents":
+                st.badge(f"Focused on {st.session_state.selected_document}",
+                         icon=":material/center_focus_strong:", color="green")
+            else:
+                st.badge(f"Documents on \u00b7 {doc_count} indexed", icon=":material/description:", color="green")
+
+        st.badge(gpu_status() or "CPU", icon=":material/memory:", color="gray")
+
+
+def render_welcome():
+    """Render the greeting shown in place of an empty chat."""
+    model_name = model_short_name()
+    st.header("What can I help with?", anchor=False)
+    hint = f"Answers come from {model_name}, running locally."
+    if not st.session_state.rag_enabled:
+        hint += " Turn on **Answer from documents** in the sidebar to ask about your files."
+    st.caption(hint)
+
+
 def render_chat_interface(pipeline: RAGPipeline):
     """
     Render main chat interface.
@@ -537,30 +608,20 @@ def render_chat_interface(pipeline: RAGPipeline):
     Args:
         pipeline: RAG pipeline instance
     """
-    model_display = AVAILABLE_MODELS[st.session_state.selected_model]["display_name"]
-    st.title(f"{model_display} Chat with RAG")
-
-    # Display RAG status
-    if st.session_state.rag_enabled and not pipeline.vector_store.is_empty():
-        doc_count = len(pipeline.get_documents())
-        if st.session_state.selected_document != "All Documents":
-            st.info(f"RAG Mode: Active | Focused on: {st.session_state.selected_document}")
-        else:
-            st.info(f"RAG Mode: Active | {doc_count} documents indexed")
-    elif st.session_state.rag_enabled and pipeline.vector_store.is_empty():
-        st.warning("RAG enabled but no documents indexed. Add some on the Documents page.")
-    else:
-        st.info("RAG Mode: Disabled")
+    render_status_bar(pipeline)
 
     # Read the chat input first (it's pinned to the bottom wherever it's called),
     # so the history knows whether a new answer is about to be generated
     prompt = st.chat_input("Ask me anything...")
     regenerate = st.session_state.pop("regenerate_requested", False)
 
+    if not st.session_state.messages and not prompt:
+        render_welcome()
+
     # Display chat history
     messages = st.session_state.messages
     for i, message in enumerate(messages):
-        with st.chat_message(message["role"]):
+        with st.chat_message(message["role"], avatar=AVATARS.get(message["role"])):
             st.markdown(message["content"])
             if message["role"] == "assistant":
                 is_latest = i == len(messages) - 1 and not prompt
@@ -570,7 +631,7 @@ def render_chat_interface(pipeline: RAGPipeline):
         # Add user message
         st.session_state.messages.append({"role": "user", "content": prompt})
 
-        with st.chat_message("user"):
+        with st.chat_message("user", avatar=AVATARS["user"]):
             st.markdown(prompt)
 
         respond(prompt, pipeline)
@@ -589,7 +650,7 @@ def respond(prompt: str, pipeline: RAGPipeline):
         pipeline: RAG pipeline instance
     """
     # Generate response, streaming it as it's produced
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar=AVATARS["assistant"]):
         message = {"role": "assistant", "content": "", "sources": []}
         # Kept in session state so that if this run is interrupted (the Stop
         # button or any other click), the partial answer survives the rerun

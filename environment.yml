@@ -25,7 +25,7 @@ dependencies:
     - ipywidgets
     - sentence-transformers
     - chromadb
-    - streamlit>=1.48  # horizontal containers, width="stretch"
+    - streamlit>=1.51  # separate light/dark themes in .streamlit/config.toml
     - pymupdf
     - tiktoken
     - pytest

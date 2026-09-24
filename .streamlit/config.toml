@@ -1,0 +1,37 @@
+# App theme. Streamlit shows the light or dark variant to match the viewer's
+# system setting; either can also be picked from the app's Settings menu.
+# Needs Streamlit >= 1.51 for the separate [theme.light] / [theme.dark] sections.
+#
+# The accent (primaryColor) carries white button labels at >= 4.5:1 contrast in
+# both modes. In dark mode that caps how light it can be, so links get their own
+# lighter linkColor to stay readable as text on the dark background.
+
+[theme]
+baseRadius = "0.6rem"
+showSidebarBorder = true
+
+[theme.light]
+primaryColor = "#4F46E5"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F6FA"
+textColor = "#1E2230"
+borderColor = "#E4E6EE"
+linkColor = "#4F46E5"
+codeBackgroundColor = "#F5F6FA"
+
+[theme.light.sidebar]
+backgroundColor = "#F7F8FB"
+secondaryBackgroundColor = "#ECEEF5"
+
+[theme.dark]
+primaryColor = "#6164F1"
+backgroundColor = "#0F1117"
+secondaryBackgroundColor = "#1A1C25"
+textColor = "#E7E8EF"
+borderColor = "#2A2D3A"
+linkColor = "#8B93FA"
+codeBackgroundColor = "#1A1C25"
+
+[theme.dark.sidebar]
+backgroundColor = "#14161E"
+secondaryBackgroundColor = "#1F2230"
