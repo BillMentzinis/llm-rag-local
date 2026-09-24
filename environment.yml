@@ -1,3 +1,6 @@
+# Conda environment for running Hugging Face models inside the app on an
+# NVIDIA GPU (CUDA). For the Ollama backend on any computer, the lighter
+# `pip install -r requirements.txt` is enough.
 name: llm-local
 channels:
   - pytorch
@@ -8,25 +11,22 @@ dependencies:
   - python=3.11
   - pytorch=2.5.1
   - pytorch-cuda=12.4
-  - torchvision
-  - torchaudio
   - pip
   - pip:
+    # Hugging Face models, 4-bit on the GPU
     - transformers>=4.45.0
-    - accelerate>=0.25.0
-    - bitsandbytes>=0.41.0
-    - peft>=0.7.0
-    - trl>=0.7.0
-    - datasets>=2.16.0
-    - sentencepiece
+    - accelerate>=0.25.0      # device_map="auto"
+    - bitsandbytes>=0.41.0    # 4-bit quantization
+    - sentencepiece           # tokenizer backends some models need
     - protobuf
-    - scipy
-    - jupyter
-    - ipywidgets
+    - tiktoken
+    # Ollama backend
+    - ollama>=0.4
+    # Documents and retrieval
     - sentence-transformers
     - chromadb
-    - streamlit>=1.51  # separate light/dark themes in .streamlit/config.toml
-    - ollama>=0.4
     - pymupdf
-    - tiktoken
+    # App
+    - streamlit>=1.51         # separate light/dark themes in .streamlit/config.toml
+    # Tests
     - pytest
