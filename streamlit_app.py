@@ -3,6 +3,7 @@ Streamlit UI for RAG-Enabled Llama 3.2 3B Chat Application.
 """
 
 import os
+import itertools
 import tempfile
 import streamlit as st
 import torch
@@ -20,6 +21,7 @@ from chat_manager import save_chat, load_chat, list_chats, delete_chat, auto_nam
 
 
 NO_CONTEXT_NOTE = "No relevant document context found, so this answer uses the model's general knowledge."
+STOPPED_NOTE = "Stopped before the answer was complete."
 
 
 # Page configuration
@@ -451,17 +453,8 @@ def render_chat_interface(pipeline: RAGPipeline):
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-
-            if message.get("rag_no_context"):
-                st.caption(NO_CONTEXT_NOTE)
-
-            # Show sources if available
-            if message["role"] == "assistant" and "sources" in message and message["sources"]:
-                with st.expander(f"Sources ({len(message['sources'])} chunks used)"):
-                    for i, source in enumerate(message["sources"]):
-                        st.markdown(f"**[{i+1}] {source['metadata']['filename']}** (Chunk {source['metadata']['chunk_index'] + 1}, Similarity: {source['similarity']:.2f})")
-                        st.text(source["text"][:200] + "..." if len(source["text"]) > 200 else source["text"])
-                        st.divider()
+            if message["role"] == "assistant":
+                render_assistant_details(message)
 
     # Chat input
     if prompt := st.chat_input("Ask me anything..."):
@@ -471,45 +464,103 @@ def render_chat_interface(pipeline: RAGPipeline):
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Generate response
+        # Generate response, streaming it as it's produced
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                response_data = generate_response(prompt, pipeline)
+            message = {"role": "assistant", "content": "", "sources": []}
+            # Kept in session state so that if this run is interrupted (the Stop
+            # button or any other click), the partial answer survives the rerun
+            st.session_state.pending_response = message
 
-                # Display response
-                st.markdown(response_data["response"])
+            body = st.container()
+            stop_slot = st.empty()
+            stop_slot.button("Stop generating", key="stop_generation")
 
-                rag_no_context = response_data.get("rag_attempted", False) and not response_data["sources"]
-                if rag_no_context:
-                    st.caption(NO_CONTEXT_NOTE)
+            stream = None
+            try:
+                with body:
+                    with st.spinner("Thinking..."):
+                        response_data = start_response(prompt, pipeline)
+                        message["sources"] = response_data["sources"]
+                        message["rag_no_context"] = response_data["rag_attempted"] and not response_data["sources"]
+                        stream = response_data["stream"]
+                        first_piece = next(stream, "")
+                    st.write_stream(record_stream(itertools.chain([first_piece], stream), message))
+            except Exception as e:
+                message["error"] = str(e)
+            finally:
+                # Also runs when Streamlit interrupts the run, which stops generation
+                if stream is not None:
+                    stream.close()
 
-                # Display sources if RAG was used
-                if response_data["sources"]:
-                    with st.expander(f"Sources ({len(response_data['sources'])} chunks used)"):
-                        for i, source in enumerate(response_data["sources"]):
-                            st.markdown(f"**[{i+1}] {source['metadata']['filename']}** (Chunk {source['metadata']['chunk_index'] + 1}, Similarity: {source['similarity']:.2f})")
-                            st.text(source["text"][:200] + "..." if len(source["text"]) > 200 else source["text"])
-                            st.divider()
+            stop_slot.empty()
+            del st.session_state.pending_response
+            render_assistant_details(message)
 
-        # Add assistant message
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": response_data["response"],
-            "sources": response_data["sources"],
-            "rag_no_context": rag_no_context
-        })
+        st.session_state.messages.append(message)
 
 
-def generate_response(prompt: str, pipeline: RAGPipeline) -> dict:
+def record_stream(pieces, message: dict):
     """
-    Generate response using RAG pipeline.
+    Pass streamed text through while accumulating it into the message.
+
+    Args:
+        pieces: Iterator of text pieces
+        message: Message dictionary whose content is extended in place
+
+    Yields:
+        The same text pieces
+    """
+    for piece in pieces:
+        message["content"] += piece
+        yield piece
+
+
+def recover_interrupted_response():
+    """
+    Keep a response whose generation was interrupted by a rerun.
+
+    Runs before anything else renders, so the sidebar's chat actions see it.
+    """
+    message = st.session_state.pop("pending_response", None)
+    if message is not None:
+        message["stopped"] = True
+        st.session_state.messages.append(message)
+
+
+def render_assistant_details(message: dict):
+    """
+    Render the notes and sources shown under an assistant message.
+
+    Args:
+        message: Assistant message dictionary
+    """
+    if message.get("error"):
+        st.error(f"Generation failed: {message['error']}")
+    elif message.get("stopped"):
+        st.caption(STOPPED_NOTE)
+
+    if message.get("rag_no_context"):
+        st.caption(NO_CONTEXT_NOTE)
+
+    # Show sources if available
+    if message.get("sources"):
+        with st.expander(f"Sources ({len(message['sources'])} chunks used)"):
+            for i, source in enumerate(message["sources"]):
+                st.markdown(f"**[{i+1}] {source['metadata']['filename']}** (Chunk {source['metadata']['chunk_index'] + 1}, Similarity: {source['similarity']:.2f})")
+                st.text(source["text"][:200] + "..." if len(source["text"]) > 200 else source["text"])
+                st.divider()
+
+
+def start_response(prompt: str, pipeline: RAGPipeline) -> dict:
+    """
+    Retrieve context if RAG is on, and start streaming the response.
 
     Args:
         prompt: User prompt
         pipeline: RAG pipeline instance
 
     Returns:
-        Response data dictionary
+        Response data dictionary with a "stream" of text pieces
     """
     # Prepare generation config
     gen_config = {
@@ -552,7 +603,7 @@ def generate_response(prompt: str, pipeline: RAGPipeline) -> dict:
             )
 
         # Generate with context
-        result = pipeline.generate_response(
+        result = pipeline.stream_response(
             query=prompt,
             context_chunks=context_chunks,
             history=history,
@@ -560,11 +611,12 @@ def generate_response(prompt: str, pipeline: RAGPipeline) -> dict:
         )
         result["rag_attempted"] = True
     else:
-        result = pipeline.generate_response(
+        result = pipeline.stream_response(
             query=prompt,
             history=history,
             generation_config=gen_config
         )
+        result["rag_attempted"] = False
 
     return result
 
@@ -575,6 +627,7 @@ def main():
     """
     # Initialize session state
     initialize_session_state()
+    recover_interrupted_response()
 
     # Load model and pipeline
     try:

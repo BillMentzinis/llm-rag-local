@@ -25,6 +25,7 @@ The app opens at `http://localhost:8501`. On first run it downloads the embeddin
 
 - Multi-model support — switch LLMs from the sidebar without restarting
 - Chat interface with 4-bit quantized models (~2–8 GB VRAM depending on model)
+- Streaming responses: text appears as it's generated, with a **Stop generating** button that halts the model and keeps the partial answer
 - RAG support: upload documents and get cited, grounded answers
 - Chat history: save, load, and delete named chat sessions (stored as JSON)
 - Supported file types: PDF, TXT, MD, and common code files
