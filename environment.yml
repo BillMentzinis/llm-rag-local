@@ -26,6 +26,7 @@ dependencies:
     - sentence-transformers
     - chromadb
     - streamlit>=1.51  # separate light/dark themes in .streamlit/config.toml
+    - ollama>=0.4
     - pymupdf
     - tiktoken
     - pytest

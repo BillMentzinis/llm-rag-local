@@ -4,6 +4,7 @@ import time
 import pytest
 import torch
 
+from llm_backends import TransformersBackend
 from rag_pipeline import RAGPipeline
 
 WORDS = [f"w{i}" for i in range(50)]
@@ -61,7 +62,8 @@ class FakeModel:
 
 
 def _pipeline(model):
-    return RAGPipeline(model=model, tokenizer=FakeTokenizer(), vector_store=object(), doc_processor=object())
+    backend = TransformersBackend("meta-llama/Llama-3.1-8B-Instruct", model=model, tokenizer=FakeTokenizer())
+    return RAGPipeline(backend, vector_store=object(), doc_processor=object())
 
 
 def test_stream_yields_text_incrementally():
@@ -71,7 +73,6 @@ def test_stream_yields_text_incrementally():
 
     assert len(pieces) == 5
     assert "".join(pieces) == "w1 w2 w3 w4 w5 "
-    assert result["prompt_tokens"] == 4
 
 
 def test_generate_response_returns_the_full_text():
@@ -115,6 +116,17 @@ def test_rag_context_is_placed_in_the_prompt():
                                                 generation_config={"max_new_tokens": 1})
     list(result["stream"])
 
-    prompt = tokenizer_pipeline.tokenizer.last_messages[-1]["content"]
+    prompt = tokenizer_pipeline.llm.tokenizer.last_messages[-1]["content"]
     assert "[Source: cats.txt, Chunk 1]" in prompt and "why purr?" in prompt
     assert result["rag_enabled"] and result["num_sources"] == 1
+
+
+def test_generating_without_a_model_is_an_error():
+    pipeline = RAGPipeline(None, vector_store=object(), doc_processor=object())
+    with pytest.raises(RuntimeError, match="No language model"):
+        pipeline.stream_response("hi")
+
+
+def test_token_counts_come_from_the_backend():
+    assert _pipeline(FakeModel()).estimate_token_count("one two three") == 3
+    assert RAGPipeline(None, vector_store=object(), doc_processor=object()).estimate_token_count("x" * 40) == 10

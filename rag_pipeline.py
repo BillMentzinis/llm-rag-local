@@ -4,24 +4,11 @@ Orchestrates document processing, retrieval, and generation for RAG functionalit
 """
 
 import os
-import torch
-from threading import Event, Thread
-from typing import List, Dict, Optional, Any, Iterator
-from transformers import StoppingCriteria, StoppingCriteriaList, TextIteratorStreamer
+from typing import List, Dict, Optional
 from document_processor import DocumentProcessor
+from llm_backends import LLMBackend
 from vector_store_manager import VectorStoreManager
 from config import RAG_CONFIG, RAG_PROMPT_TEMPLATE, TOKEN_BUDGET
-
-
-class _StopOnEvent(StoppingCriteria):
-    """Stops generation once the event is set, e.g. when the reader abandons the stream."""
-
-    def __init__(self, event: Event):
-        self.event = event
-
-    def __call__(self, input_ids, scores, **kwargs):
-        return torch.full((input_ids.shape[0],), self.event.is_set(),
-                          dtype=torch.bool, device=input_ids.device)
 
 
 class RAGPipeline:
@@ -29,20 +16,18 @@ class RAGPipeline:
     Coordinates RAG workflow: document ingestion, retrieval, and context-enhanced generation.
     """
 
-    def __init__(self, model: Any, tokenizer: Any, vector_store: VectorStoreManager = None,
+    def __init__(self, llm: Optional[LLMBackend] = None, vector_store: VectorStoreManager = None,
                  doc_processor: DocumentProcessor = None, config: Dict = None):
         """
         Initialize RAG Pipeline.
 
         Args:
-            model: Hugging Face model for generation
-            tokenizer: Hugging Face tokenizer
+            llm: Backend that generates answers; ingestion and retrieval work without one
             vector_store: VectorStoreManager instance (creates new if None)
             doc_processor: DocumentProcessor instance (creates new if None)
             config: Optional RAG configuration override
         """
-        self.model = model
-        self.tokenizer = tokenizer
+        self.llm = llm
         self.vector_store = vector_store or VectorStoreManager()
         self.doc_processor = doc_processor or DocumentProcessor()
         self.config = config or RAG_CONFIG
@@ -186,13 +171,10 @@ class RAGPipeline:
         Returns:
             Estimated token count
         """
-        # Use tokenizer for accurate count
-        try:
-            tokens = self.tokenizer.encode(text, add_special_tokens=False)
-            return len(tokens)
-        except:
-            # Fallback to character-based estimation
-            return len(text) // 4
+        if self.llm is not None:
+            return self.llm.count_tokens(text)
+        # Character-based estimation
+        return len(text) // 4
 
     def truncate_context_to_budget(self, context_chunks: List[Dict], token_budget: int) -> List[Dict]:
         """
@@ -224,9 +206,9 @@ class RAGPipeline:
         """
         Start generating a response with optional RAG context, streaming its text.
 
-        Generation runs in a background thread and only starts once the stream
-        is iterated. Closing the stream early (or abandoning it, as happens when
-        Streamlit interrupts a script run) stops generation at the next token.
+        Generation only starts once the stream is iterated. Closing the stream
+        early (or abandoning it, as happens when Streamlit interrupts a script
+        run) stops generation.
 
         Args:
             query: User query
@@ -261,66 +243,15 @@ class RAGPipeline:
         # Add current query
         messages.append({"role": "user", "content": prompt_text})
 
-        # Apply chat template
-        formatted_prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
-
-        # Tokenize
-        inputs = self.tokenizer(formatted_prompt, return_tensors="pt").to(self.model.device)
+        if self.llm is None:
+            raise RuntimeError("No language model is loaded")
 
         return {
-            "stream": self._stream_tokens(inputs, generation_config or {}),
+            "stream": self.llm.stream_chat(messages, generation_config or {}),
             "sources": sources_used,
             "num_sources": len(sources_used),
-            "prompt_tokens": inputs.input_ids.shape[1],
             "rag_enabled": len(sources_used) > 0
         }
-
-    def _stream_tokens(self, inputs: Any, generation_config: Dict) -> Iterator[str]:
-        """
-        Run model.generate in a background thread and yield decoded text as it arrives.
-
-        Args:
-            inputs: Tokenized prompt on the model's device
-            generation_config: Generation parameters
-
-        Yields:
-            Pieces of response text
-        """
-        streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
-        stop = Event()
-        errors = []
-
-        def generate():
-            try:
-                with torch.no_grad():  # grad mode is per thread
-                    self.model.generate(
-                        **inputs,
-                        **generation_config,
-                        pad_token_id=self.tokenizer.eos_token_id,
-                        streamer=streamer,
-                        stopping_criteria=StoppingCriteriaList([_StopOnEvent(stop)])
-                    )
-            except Exception as e:
-                errors.append(e)
-                streamer.end()  # unblock the reader
-
-        thread = Thread(target=generate, daemon=True)
-        thread.start()
-        try:
-            for text in streamer:
-                if text:
-                    yield text
-            if errors:
-                raise errors[0]
-        finally:
-            # Stop early if the reader went away, and wait so the GPU is free
-            # before anything else is generated
-            stop.set()
-            thread.join()
 
     def generate_response(self, query: str, context_chunks: List[Dict] = None,
                          history: List[Dict] = None, generation_config: Dict = None) -> Dict:
@@ -423,7 +354,7 @@ if __name__ == "__main__":
     # Simple initialization test
     print("Testing RAG Pipeline initialization...")
     print("Note: This test only initializes vector store and document processor.")
-    print("Full pipeline requires model and tokenizer.")
+    print("Full pipeline requires an LLM backend (see llm_backends.py).")
 
     vector_store = VectorStoreManager()
     doc_processor = DocumentProcessor()

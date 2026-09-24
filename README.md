@@ -6,25 +6,52 @@ A local Retrieval-Augmented Generation (RAG) chat application with a Streamlit U
 
 ## Quick Start
 
-```bash
-# 1. Create and activate conda environment
-conda env create -f environment.yml
-conda activate llm-local
+There are two ways to run the model. Pick one; you can switch between them from the sidebar at any time.
 
-# 2. Launch the app
+### Option A: Ollama (any computer)
+
+Works on macOS, Windows and Linux, with or without a GPU (NVIDIA, AMD and Apple GPUs are used when present).
+
+```bash
+# 1. Install Ollama from https://ollama.com, then download a model
+ollama pull llama3.1:8b
+
+# 2. Install the app's dependencies
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+# 3. Launch
 streamlit run streamlit_app.py
 ```
 
-The app opens at `http://localhost:8501`. Run it from the repository folder so Streamlit picks up the theme in `.streamlit/config.toml`. On first run it downloads the embedding model (~90 MB). LLM weights are downloaded from Hugging Face on first use and cached at `~/.cache/huggingface/hub/`.
+The models you've pulled appear in the sidebar's **Model** list while Ollama is running. On a machine without an NVIDIA GPU the app starts on your first Ollama model automatically; to choose it explicitly, set `LLM_MODEL=ollama:llama3.1:8b`. If Ollama runs somewhere other than `http://localhost:11434`, set `OLLAMA_HOST`.
+
+### Option B: Hugging Face models inside the app (NVIDIA GPU)
+
+The app loads the model itself, 4-bit quantized with bitsandbytes (~2–8 GB of VRAM depending on the model).
+
+```bash
+# 1. Create and activate the conda environment (includes CUDA)
+conda env create -f environment.yml
+conda activate llm-local
+
+# 2. Launch
+streamlit run streamlit_app.py
+```
+
+LLM weights are downloaded from Hugging Face on first use and cached at `~/.cache/huggingface/hub/`.
 
 > **Note:** Models gated on Hugging Face (e.g. Llama) require an account with access. Log in with `huggingface-cli login` before starting.
+
+Either way, the app opens at `http://localhost:8501`. Run it from the repository folder so Streamlit picks up the theme in `.streamlit/config.toml`. On first run it downloads the embedding model (~90 MB).
 
 ---
 
 ## Features
 
-- Multi-model support — switch LLMs from the sidebar without restarting
-- Chat interface with 4-bit quantized models (~2–8 GB VRAM depending on model)
+- Two model backends: any model you've pulled into [Ollama](https://ollama.com) (runs on any computer), or Hugging Face models run inside the app, 4-bit quantized (NVIDIA GPU)
+- Switch models from the sidebar without restarting
 - Streaming responses: text appears as it's generated, with a **Stop generating** button that halts the model and keeps the partial answer
 - **Copy** any answer (as raw Markdown) and **Regenerate** the latest one
 - Light and dark themes that follow your system setting, and a status bar showing the model, whether answers use your documents, and GPU memory in use
@@ -37,6 +64,10 @@ The app opens at `http://localhost:8501`. Run it from the repository folder so S
 
 ## Available Models
 
+**Ollama:** every model you've pulled (`ollama list`) is offered, e.g. `llama3.1:8b`, `qwen2.5:7b`, `phi4`, `mistral`. Browse more at [ollama.com/library](https://ollama.com/library).
+
+**Hugging Face (NVIDIA GPU):**
+
 | Model | Display Name | VRAM (4-bit) | Notes |
 |-------|-------------|--------------|-------|
 | `meta-llama/Llama-3.1-8B-Instruct` | Llama 3.1 8B | ~4 GB | Default |
@@ -45,14 +76,14 @@ The app opens at `http://localhost:8501`. Run it from the repository folder so S
 | `microsoft/Phi-3.5-mini-instruct` | Phi-3.5 Mini 3.8B | ~2 GB | Fast, efficient |
 | `microsoft/phi-4` | Phi-4 14B | ~8 GB | Needs larger GPU |
 
-Switch models using the **Model** selector in the chat sidebar. Switching clears the model cache and reloads — documents and chat history are unaffected.
+Switch models using the **Model** selector in the chat sidebar: Ollama models are listed as "· Ollama", Hugging Face ones as "· HF". Switching releases the previous model's memory; documents and chat history are unaffected.
 
 ## Architecture
 
 | Component | Technology |
 |-----------|------------|
 | UI | Streamlit |
-| LLM | Configurable (see table above), 4-bit via bitsandbytes |
+| LLM | Ollama, or Hugging Face transformers 4-bit via bitsandbytes (`llm_backends.py`) |
 | Vector DB | ChromaDB |
 | Embeddings | sentence-transformers `all-MiniLM-L6-v2` |
 | PDF parsing | PyMuPDF |
@@ -63,12 +94,14 @@ Switch models using the **Model** selector in the chat sidebar. Switching clears
 LLM/
 ├── streamlit_app.py        # Main Streamlit UI
 ├── rag_pipeline.py         # RAG orchestration
+├── llm_backends.py         # Ollama and Hugging Face model backends
 ├── document_processor.py   # File parsing and chunking
 ├── vector_store_manager.py # ChromaDB operations
 ├── chat_manager.py         # Chat save/load/delete helpers
 ├── config.py               # All configuration parameters
 ├── .streamlit/config.toml  # Light and dark theme
-├── environment.yml         # Conda environment
+├── requirements.txt        # pip install (Ollama backend, any OS)
+├── environment.yml         # Conda environment (includes CUDA, for Hugging Face models)
 ├── tests/                  # pytest suite (runs offline, no GPU needed)
 ├── chats/                  # Saved chat sessions (auto-created, gitignored)
 └── chroma_db/              # Vector database (auto-created, gitignored)
@@ -114,7 +147,7 @@ All parameters are in `config.py`:
 
 - **RAG**: `chunk_size` (200 tokens, overlap included), `chunk_overlap` (30), `top_k` (5), `min_similarity` (0.3, cosine similarity). The embedding model only reads the first 256 tokens of a chunk, so keep `chunk_size` below that if you raise it.
 - **Generation**: `temperature` (0.7), `top_p` (0.9), `max_new_tokens` (512)
-- **Models**: `AVAILABLE_MODELS` dict — add or remove models here
+- **Models**: `DEFAULT_MODEL` (the model used on first launch; override with the `LLM_MODEL` environment variable, e.g. `ollama:llama3.1:8b` or `transformers:meta-llama/Llama-3.1-8B-Instruct`), `OLLAMA_CONFIG` (server address; override with `OLLAMA_HOST`), and `AVAILABLE_MODELS` (the Hugging Face models offered — add or remove models here)
 
 ## Supported File Types
 
@@ -124,11 +157,11 @@ All parameters are in `config.py`:
 ## Running Tests
 
 ```bash
-pip install pytest   # already included in environment.yml
+pip install pytest   # already included in requirements.txt and environment.yml
 pytest tests
 ```
 
-The tests use a small stand-in embedding model and a temporary ChromaDB, so they run offline without a GPU or model downloads.
+The tests use a small stand-in embedding model, a temporary ChromaDB and a fake Ollama server (`tests/fake_ollama.py`), so they run offline without a GPU, Ollama or model downloads.
 
 ## Performance
 
@@ -137,13 +170,19 @@ The tests use a small stand-in embedding model and a temporary ChromaDB, so they
 | VRAM (default model) | ~4 GB |
 | First run | Slow (downloads model weights) |
 | Retrieval | <100 ms |
-| Generation | ~20-30 tokens/second (GPU-dependent) |
+| Generation | ~20-30 tokens/second on a mid-range GPU; slower on CPU |
 
 ## Troubleshooting
 
-**Model loads slowly** — expected on first run; subsequent loads use the local cache.
+**Model loads slowly** — expected on first run; subsequent loads use the local cache. With Ollama, the first answer after starting (or after a few idle minutes) waits while Ollama loads the model.
 
-**Switching models uses a lot of VRAM** — the old model is evicted from cache when you switch. If you run out of memory, restart the app.
+**No Ollama models in the Model list** — Ollama isn't running, or is running somewhere other than `http://localhost:11434` (set `OLLAMA_HOST`). Check with `ollama list`. The list refreshes every few seconds.
+
+**"Ollama doesn't have the model"** — download it with `ollama pull <model>`.
+
+**"Hugging Face models need an NVIDIA GPU"** — pick an Ollama model instead (see Option A above).
+
+**Switching models uses a lot of VRAM** — the previous Hugging Face model is released when you switch. Ollama keeps a model loaded for a few minutes after its last use, and unloads it sooner if memory is needed. If you run out of memory, restart the app.
 
 **Poor retrieval quality** — increase **Context chunks** in the sidebar, or lower `min_similarity` in `config.py`. When no chunk clears the threshold, the answer is marked as coming from the model's general knowledge.
 
