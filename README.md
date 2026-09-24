@@ -1,6 +1,7 @@
 # LLM RAG Local
 
 ![Python](https://img.shields.io/badge/python-3.11-blue)
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
 
 A local Retrieval-Augmented Generation (RAG) chat application with a Streamlit UI. Runs entirely on your machine — no cloud API keys required.
 
@@ -103,6 +104,7 @@ LLM/
 ├── requirements.txt        # pip install (Ollama backend, any OS)
 ├── environment.yml         # Conda environment (includes CUDA, for Hugging Face models)
 ├── tests/                  # pytest suite (runs offline, no GPU needed)
+├── LICENSE                 # MIT
 ├── chats/                  # Saved chat sessions (auto-created, gitignored)
 └── chroma_db/              # Vector database (auto-created, gitignored)
 ```
@@ -191,3 +193,7 @@ The tests use a small stand-in embedding model, a temporary ChromaDB and a fake 
 **Out of memory** — reduce `max_new_tokens`, close other GPU apps, or switch to a smaller model.
 
 **Document processing fails** — check file format is supported and size is <10 MB.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
