@@ -109,3 +109,19 @@ def test_unsupported_and_empty_files_are_rejected(tmp_path):
 
     assert processor.validate_file(str(unsupported))[0] is False
     assert processor.validate_file(str(empty)) == (False, "File is empty")
+
+
+def test_pdf_text_is_extracted(tmp_path):
+    import pymupdf
+
+    path = tmp_path / "report.pdf"
+    pdf = pymupdf.open()
+    for text in ["Cats purr when content.", "Dogs bark at strangers."]:
+        pdf.new_page().insert_text((72, 72), text)
+    pdf.save(path)
+    pdf.close()
+
+    result = DocumentProcessor().process_file(str(path))
+
+    assert "Cats purr when content." in result["text"] and "Dogs bark at strangers." in result["text"]
+    assert result["file_type"] == "PDF Document" and result["total_chunks"] == 1

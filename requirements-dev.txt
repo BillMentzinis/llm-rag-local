@@ -1,0 +1,4 @@
+# Extra tools for the browser tests (tests/test_browser.py), on top of requirements.txt:
+#   pip install -r requirements-dev.txt
+#   playwright install chromium
+playwright

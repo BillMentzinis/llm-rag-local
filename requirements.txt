@@ -11,5 +11,5 @@ streamlit>=1.56
 ollama>=0.4
 chromadb
 sentence-transformers
-pymupdf
+pymupdf>=1.24.3
 pytest

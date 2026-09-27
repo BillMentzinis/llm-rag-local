@@ -8,7 +8,7 @@ import re
 import hashlib
 from typing import List, Dict, Optional
 from datetime import datetime
-import fitz  # PyMuPDF
+import pymupdf
 from config import SUPPORTED_EXTENSIONS, FILE_CONFIG, RAG_CONFIG
 
 
@@ -118,7 +118,7 @@ class DocumentProcessor:
         """
         text = ""
         try:
-            doc = fitz.open(file_path)
+            doc = pymupdf.open(file_path)
             for page in doc:
                 text += page.get_text()
             doc.close()
