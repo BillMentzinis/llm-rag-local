@@ -132,7 +132,7 @@ class FakeOllama:
                     chunk({"model": model, "created_at": now, "done": True, "done_reason": "stop",
                            "message": {"role": "assistant", "content": ""},
                            "eval_count": len(fake.words)})
-                except (BrokenPipeError, ConnectionResetError):
+                except ConnectionError:  # BrokenPipeError/ConnectionResetError (POSIX), ConnectionAbortedError (Windows)
                     fake.disconnected.set()
                     if fake.log:
                         print(f"client disconnected after {fake.chunks_sent} of {len(fake.words)} chunks", flush=True)

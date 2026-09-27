@@ -47,6 +47,8 @@ LLM weights are downloaded from Hugging Face on first use and cached at `~/.cach
 
 Either way, the app opens at `http://localhost:8501`. Run it from the repository folder so Streamlit picks up the theme in `.streamlit/config.toml`. On first run it downloads the embedding model (~90 MB).
 
+To stop the app, press `Ctrl+C` in the terminal running it.
+
 ---
 
 ## Features
