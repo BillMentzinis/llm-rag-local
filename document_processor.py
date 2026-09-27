@@ -5,11 +5,19 @@ Handles file parsing, text extraction, and chunking for various file types.
 
 import os
 import re
+import bisect
 import hashlib
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 import pymupdf
 from config import SUPPORTED_EXTENSIONS, FILE_CONFIG, RAG_CONFIG
+
+# Put between a PDF's pages; a paragraph break, so chunks tend to end at page boundaries
+PAGE_BREAK = "\n\n"
+
+
+class DocumentError(Exception):
+    """A file that can't be read or indexed; the message says why."""
 
 
 class DocumentProcessor:
@@ -106,26 +114,21 @@ class DocumentProcessor:
                 digest.update(block)
         return digest.hexdigest()
 
-    def extract_text_from_pdf(self, file_path: str) -> str:
+    def extract_pages_from_pdf(self, file_path: str) -> List[str]:
         """
-        Extract text from PDF file using PyMuPDF.
+        Extract the text of each page of a PDF file using PyMuPDF.
 
         Args:
             file_path: Path to PDF file
 
         Returns:
-            Extracted text
+            Text of each page, in order
         """
-        text = ""
         try:
-            doc = pymupdf.open(file_path)
-            for page in doc:
-                text += page.get_text()
-            doc.close()
+            with pymupdf.open(file_path) as doc:
+                return [page.get_text() for page in doc]
         except Exception as e:
-            raise Exception(f"Error extracting text from PDF: {str(e)}")
-
-        return text.strip()
+            raise DocumentError(f"Error extracting text from PDF: {str(e)}") from e
 
     def extract_text_from_text_file(self, file_path: str) -> str:
         """
@@ -147,11 +150,46 @@ class DocumentProcessor:
                 with open(file_path, 'r', encoding=FILE_CONFIG["encoding_fallback"]) as f:
                     return f.read()
             except Exception as e:
-                raise Exception(f"Error reading text file: {str(e)}")
+                raise DocumentError(f"Error reading text file: {str(e)}") from e
+
+    def read_document(self, file_path: str) -> Tuple[str, Optional[List[int]]]:
+        """
+        Validate a file and extract its text.
+
+        Args:
+            file_path: Path to the file
+
+        Returns:
+            Tuple of (text, page_starts): page_starts lists where each page
+            starts in the text for a PDF, and is None for other files
+
+        Raises:
+            DocumentError: If the file isn't valid or has no text
+        """
+        is_valid, error_msg = self.validate_file(file_path)
+        if not is_valid:
+            raise DocumentError(error_msg)
+
+        page_starts = None
+        if os.path.splitext(file_path)[1].lower() == ".pdf":
+            pages = self.extract_pages_from_pdf(file_path)
+            page_starts, offset = [], 0
+            for page in pages:
+                page_starts.append(offset)
+                offset += len(page) + len(PAGE_BREAK)
+            text = PAGE_BREAK.join(pages)
+        else:
+            # All other supported types are text-based
+            text = self.extract_text_from_text_file(file_path)
+
+        if not text.strip():
+            raise DocumentError("No text content found in file")
+
+        return text, page_starts
 
     def load_file(self, file_path: str) -> str:
         """
-        Load and extract text from file based on file type.
+        Validate a file and extract its text.
 
         Args:
             file_path: Path to the file
@@ -160,26 +198,9 @@ class DocumentProcessor:
             Extracted text content
 
         Raises:
-            Exception: If file validation fails or extraction errors occur
+            DocumentError: If the file isn't valid or has no text
         """
-        # Validate file
-        is_valid, error_msg = self.validate_file(file_path)
-        if not is_valid:
-            raise Exception(error_msg)
-
-        # Extract text based on file type
-        ext = os.path.splitext(file_path)[1].lower()
-
-        if ext == ".pdf":
-            text = self.extract_text_from_pdf(file_path)
-        else:
-            # All other supported types are text-based
-            text = self.extract_text_from_text_file(file_path)
-
-        if not text.strip():
-            raise Exception("No text content found in file")
-
-        return text
+        return self.read_document(file_path)[0]
 
     def estimate_tokens(self, text: str) -> int:
         """
@@ -232,6 +253,28 @@ class DocumentProcessor:
 
         return chunks
 
+    @staticmethod
+    def _add_page_numbers(chunks: List[Dict], text: str, page_starts: List[int]) -> None:
+        """
+        Record the pages each chunk comes from, as 1-based page_start and page_end.
+
+        Chunks are pieces of the text in order, so each is looked up from where
+        the previous one starts.
+
+        Args:
+            chunks: Chunk dictionaries from chunk_text(text)
+            text: The text that was chunked
+            page_starts: Where each page starts in the text
+        """
+        position = 0
+        for chunk in chunks:
+            found = text.find(chunk["text"], position)
+            if found < 0:
+                continue
+            position = found
+            chunk["page_start"] = bisect.bisect_right(page_starts, found)
+            chunk["page_end"] = bisect.bisect_right(page_starts, found + len(chunk["text"]) - 1)
+
     def _recursive_split(self, text: str, chunk_size: int, overlap: int,
                         separators: List[str], current_sep_idx: int = 0) -> List[str]:
         """
@@ -266,7 +309,7 @@ class DocumentProcessor:
 
             # If single piece is larger than chunk_size, recursively split with next separator
             if len(piece) > chunk_size:
-                if current_chunk:
+                if current_chunk.strip():
                     chunks.append(current_chunk.strip())
                     current_chunk = ""
 
@@ -278,7 +321,8 @@ class DocumentProcessor:
 
             # If adding piece would exceed chunk_size, save current chunk
             if len(current_chunk) + len(piece) > chunk_size and current_chunk:
-                chunks.append(current_chunk.strip())
+                if current_chunk.strip():  # a run of blank lines isn't a chunk
+                    chunks.append(current_chunk.strip())
                 # Start new chunk with overlap, trimmed so the chunk stays within chunk_size
                 current_chunk = self._get_overlap(current_chunk, min(overlap, chunk_size - len(piece))) + piece
             else:
@@ -342,13 +386,13 @@ class DocumentProcessor:
                 - file_type: File type description
                 - file_path: Path to file
                 - text: Extracted text
-                - chunks: List of chunk dictionaries
+                - chunks: List of chunk dictionaries (with page_start and page_end for PDFs)
                 - metadata: File metadata
         """
         filename = os.path.basename(file_path)
 
         # Extract text
-        text = self.load_file(file_path)
+        text, page_starts = self.read_document(file_path)
 
         # Prepare metadata
         metadata = {
@@ -361,6 +405,8 @@ class DocumentProcessor:
 
         # Chunk text
         chunks = self.chunk_text(text, metadata)
+        if page_starts:
+            self._add_page_numbers(chunks, text, page_starts)
 
         return {
             "filename": filename,

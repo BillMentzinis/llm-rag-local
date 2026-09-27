@@ -193,3 +193,20 @@ def test_an_interrupted_answer_is_kept_and_marked_stopped(fake):
     assert last["content"] == "partial ans" and last["stopped"]
     assert "pending_response" not in at.session_state
     assert any("Stopped before" in c.value for c in at.caption)
+
+
+def test_chats_with_the_same_first_question_are_saved_separately(fake):
+    import chat_manager
+
+    def new_chat():  # saves the current chat first
+        next(b for b in at.sidebar.button if b.label == "New chat").click().run()
+
+    at = start_app()
+    ask(at, "hello")
+    new_chat()
+    ask(at, "hello")
+    ask(at, "and again")
+    new_chat()
+
+    chats = {c["name"]: c["message_count"] for c in chat_manager.list_chats()}
+    assert chats == {"hello": 2, "hello (2)": 4}

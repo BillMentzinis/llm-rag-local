@@ -2,7 +2,7 @@ import re
 
 import pytest
 
-from document_processor import DocumentProcessor
+from document_processor import DocumentError, DocumentProcessor
 
 SAMPLE = "\n\n".join(
     f"Paragraph {p}. " + " ".join(f"Sentence {p}-{s} talks about topic{p}x{s} in some detail." for s in range(12))
@@ -47,6 +47,12 @@ def test_text_without_separators_is_force_split():
     chunks = processor.chunk_text("x" * 1000)
     assert len(chunks) > 1
     assert all(len(c["text"]) <= 50 * 4 for c in chunks)
+
+
+def test_blank_lines_never_make_an_empty_chunk():
+    text = "aaaa bbbb" + "\n" * 30 + "cccc dddd eeee ffff"
+    chunks = DocumentProcessor(chunk_size=4, chunk_overlap=0).chunk_text(text)
+    assert [c["text"] for c in chunks] == ["aaaa bbbb", "cccc dddd eeee", "ffff"]
 
 
 def test_zero_overlap_does_not_repeat_text():
@@ -111,17 +117,79 @@ def test_unsupported_and_empty_files_are_rejected(tmp_path):
     assert processor.validate_file(str(empty)) == (False, "File is empty")
 
 
-def test_pdf_text_is_extracted(tmp_path):
+def make_pdf(path, pages):
+    """Write a PDF with one page per list of lines."""
     import pymupdf
 
-    path = tmp_path / "report.pdf"
     pdf = pymupdf.open()
-    for text in ["Cats purr when content.", "Dogs bark at strangers."]:
-        pdf.new_page().insert_text((72, 72), text)
+    for lines in pages:
+        page = pdf.new_page()
+        for i, line in enumerate(lines):
+            page.insert_text((72, 72 + 14 * i), line)
     pdf.save(path)
     pdf.close()
+    return str(path)
 
-    result = DocumentProcessor().process_file(str(path))
+
+def test_pdf_text_is_extracted(tmp_path):
+    path = make_pdf(tmp_path / "report.pdf", [["Cats purr when content."], ["Dogs bark at strangers."]])
+
+    result = DocumentProcessor().process_file(path)
 
     assert "Cats purr when content." in result["text"] and "Dogs bark at strangers." in result["text"]
     assert result["file_type"] == "PDF Document" and result["total_chunks"] == 1
+
+
+def test_pdf_chunks_record_the_pages_they_come_from(tmp_path):
+    topics = ["cats", "dogs", "owls"]
+    pages = [[f"Line {i} about {topic}, with a few more words." for i in range(8)] for topic in topics]
+    path = make_pdf(tmp_path / "animals.pdf", pages)
+
+    chunks = DocumentProcessor(chunk_size=40, chunk_overlap=0).process_file(path)["chunks"]
+
+    assert len(chunks) > 3
+    for chunk in chunks:
+        mentioned = [t for t in topics if f"about {t}" in chunk["text"]]
+        assert mentioned == topics[chunk["page_start"] - 1:chunk["page_end"]], chunk
+    assert {c["page_start"] for c in chunks} == {1, 2, 3}
+
+
+def test_a_chunk_spanning_pages_records_the_range(tmp_path):
+    path = make_pdf(tmp_path / "short.pdf", [["One."], ["Two."], ["Three."]])
+
+    [chunk] = DocumentProcessor().process_file(path)["chunks"]
+
+    assert (chunk["page_start"], chunk["page_end"]) == (1, 3)
+
+
+def test_blank_pages_keep_the_numbering(tmp_path):
+    path = make_pdf(tmp_path / "gaps.pdf", [["Intro text."], [], ["Page three."]])
+
+    chunks = DocumentProcessor(chunk_size=4, chunk_overlap=0).process_file(path)["chunks"]
+
+    assert [(c["text"], c["page_start"], c["page_end"]) for c in chunks] == [
+        ("Intro text.", 1, 1), ("Page three.", 3, 3)]
+
+
+def test_text_files_have_no_page_numbers(tmp_path):
+    path = tmp_path / "notes.txt"
+    path.write_text("Just some notes.", encoding="utf-8")
+
+    [chunk] = DocumentProcessor().process_file(str(path))["chunks"]
+
+    assert "page_start" not in chunk and "page_end" not in chunk
+
+
+def test_unreadable_files_raise_document_error(tmp_path):
+    blank = tmp_path / "blank.txt"
+    blank.write_text("   \n\n  ", encoding="utf-8")
+    broken = tmp_path / "broken.pdf"
+    broken.write_bytes(b"not really a pdf")
+    processor = DocumentProcessor()
+
+    with pytest.raises(DocumentError, match="No text content"):
+        processor.load_file(str(blank))
+    with pytest.raises(DocumentError, match="Error extracting text from PDF"):
+        processor.load_file(str(broken))
+    with pytest.raises(DocumentError, match="File does not exist"):
+        processor.process_file(str(tmp_path / "missing.txt"))

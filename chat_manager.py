@@ -37,14 +37,31 @@ def auto_name_from_message(first_message: str, max_len: int = 40) -> str:
     return name
 
 
-def save_chat(name: str, messages: List[Dict]) -> str:
+def _chat_path(name: str) -> str:
+    return os.path.join(CHATS_DIR, _safe_filename(name) + ".json")
+
+
+def unique_chat_name(name: str) -> str:
     """
-    Persist a chat to chats/<safe_name>.json.
-    Returns the absolute path that was written.
+    Return name, or name (2), name (3)... whichever isn't saved yet,
+    so a new chat never overwrites an existing one with the same name.
     """
     _ensure_chats_dir()
-    safe = _safe_filename(name)
-    path = os.path.join(CHATS_DIR, safe + ".json")
+    candidate, n = name, 2
+    while os.path.exists(_chat_path(candidate)):
+        candidate = f"{name} ({n})"
+        n += 1
+    return candidate
+
+
+def save_chat(name: str, messages: List[Dict], filepath: Optional[str] = None) -> str:
+    """
+    Persist a chat as JSON: to filepath when re-saving a chat, otherwise to
+    chats/<safe_name>.json (use unique_chat_name() for a new chat's name).
+    Returns the path that was written.
+    """
+    _ensure_chats_dir()
+    path = filepath or _chat_path(name)
     payload = {
         "name": name,
         "saved_at": datetime.now().isoformat(),
