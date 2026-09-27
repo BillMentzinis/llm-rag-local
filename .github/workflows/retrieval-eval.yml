@@ -1,0 +1,58 @@
+name: Retrieval evaluation
+
+# Runs the example evaluation set with the real embedding model and shows the
+# report on the run's summary page. It reports; it doesn't fail on low scores.
+on:
+  push:
+    branches: [main]
+    paths:
+      - config.py
+      - document_processor.py
+      - vector_store_manager.py
+      - rag_pipeline.py
+      - evaluate_retrieval.py
+      - examples/eval/**
+      - requirements.txt
+      - .github/workflows/retrieval-eval.yml
+  pull_request:
+    paths:
+      - config.py
+      - document_processor.py
+      - vector_store_manager.py
+      - rag_pipeline.py
+      - evaluate_retrieval.py
+      - examples/eval/**
+      - requirements.txt
+      - .github/workflows/retrieval-eval.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: retrieval-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    name: Evaluate retrieval
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install CPU-only PyTorch
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Cache the embedding model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: huggingface-${{ hashFiles('config.py') }}
+          restore-keys: huggingface-
+      - name: Evaluate the example set
+        run: python evaluate_retrieval.py run examples/eval/questions.json | tee -a "$GITHUB_STEP_SUMMARY"

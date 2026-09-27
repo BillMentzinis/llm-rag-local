@@ -1,0 +1,114 @@
+{
+  "questions": [
+    {
+      "question": "What hardware does the home server run on?",
+      "document": "home-server-handbook.pdf",
+      "quote": "The home server is a refurbished Dell OptiPlex 7050"
+    },
+    {
+      "question": "Where are the Docker Compose files kept?",
+      "document": "home-server-handbook.pdf",
+      "quote": "the compose files live in /srv/compose, one folder per service"
+    },
+    {
+      "question": "What time do the backups start each night?",
+      "document": "home-server-handbook.pdf",
+      "quote": "Nightly backups run at 02:00 with restic"
+    },
+    {
+      "question": "How long are old backups kept?",
+      "document": "home-server-handbook.pdf",
+      "quote": "Seven daily, four weekly and six monthly snapshots are kept"
+    },
+    {
+      "question": "Is there an off-site copy of the backups?",
+      "document": "home-server-handbook.pdf",
+      "quote": "every Sunday they are copied to a Backblaze B2 bucket as the off-site copy"
+    },
+    {
+      "question": "Where is the password for the backups?",
+      "document": "home-server-handbook.pdf",
+      "quote": "The backup password is stored in the family password manager"
+    },
+    {
+      "question": "How do I get a deleted file back?",
+      "document": "home-server-handbook.pdf",
+      "quote": "list the snapshots with restic snapshots, then run restic restore with the snapshot ID"
+    },
+    {
+      "question": "How often should we check that restoring actually works?",
+      "document": "home-server-handbook.pdf",
+      "quote": "Test a restore on the first Saturday of every month"
+    },
+    {
+      "question": "The server's disk died. How do I set everything up again?",
+      "document": "home-server-handbook.pdf",
+      "quote": "import the ZFS pool with zpool import tank"
+    },
+    {
+      "question": "Will the server restart by itself after installing updates?",
+      "document": "home-server-handbook.pdf",
+      "quote": "the server reboots itself at 04:00 on Wednesdays"
+    },
+    {
+      "question": "How will we find out if Nextcloud goes down?",
+      "document": "home-server-handbook.pdf",
+      "quote": "Uptime Kuma checks each service every five minutes"
+    },
+    {
+      "question": "What IP address does the server have?",
+      "document": "network-notes.md",
+      "quote": "The server has a fixed address, 192.168.1.20"
+    },
+    {
+      "question": "Which ports are open to the internet?",
+      "document": "network-notes.md",
+      "quote": "WireGuard listens on port 51820/UDP, which is the only port forwarded on the router"
+    },
+    {
+      "question": "Websites won't load on my phone but the router seems fine. What should I check?",
+      "document": "network-notes.md",
+      "quote": "check the Pi-hole container first"
+    },
+    {
+      "question": "How do I set up the VPN on a new laptop?",
+      "document": "network-notes.md",
+      "quote": "To add a device, run ./add-peer.sh with a name for it in /srv/compose/wireguard"
+    },
+    {
+      "question": "Can visitors on the guest Wi-Fi see our devices?",
+      "document": "network-notes.md",
+      "quote": "which is isolated from the rest of the network"
+    },
+    {
+      "question": "How much salt goes into the bread?",
+      "document": "sourdough.txt",
+      "quote": "The dough is 500 g bread flour, 350 g water, 100 g active starter and 10 g salt"
+    },
+    {
+      "question": "How hot should the oven be for the sourdough?",
+      "document": "sourdough.txt",
+      "quote": "Bake in a Dutch oven at 250 degrees C for 20 minutes with the lid on"
+    },
+    {
+      "question": "Why did my loaf come out dense and gummy?",
+      "document": "sourdough.txt",
+      "quote": "A dense, gummy crumb usually means the dough was underproofed"
+    },
+    {
+      "question": "What pressure should the road bike's tyres be?",
+      "document": "bike-maintenance.md",
+      "quote": "pump to 80 to 90 psi for a rider of about 70 kg"
+    },
+    {
+      "question": "When should I buy a new chain?",
+      "document": "bike-maintenance.md",
+      "quote": "Replace the chain when a chain checker shows 0.5% wear"
+    },
+    {
+      "question": "How often does the chain need oiling?",
+      "document": "bike-maintenance.md",
+      "quote": "Clean and lube the chain every 300 km, and after every ride in the rain"
+    }
+  ]
+}
