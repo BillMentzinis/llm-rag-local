@@ -13,6 +13,9 @@ __pycache__/
 # Saved chat sessions — personal, not for sharing
 chats/
 
+# Local test fixtures for manual RAG testing
+test_docs/
+
 # Secrets
 .env
 .streamlit/secrets.toml
