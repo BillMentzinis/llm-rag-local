@@ -104,6 +104,7 @@ llm-rag-local/
 ├── document_processor.py   # File parsing and chunking
 ├── vector_store_manager.py # ChromaDB operations
 ├── chat_manager.py         # Chat save/load/delete helpers
+├── evaluate_retrieval.py   # Measures how well search finds the right passage
 ├── config.py               # All configuration parameters
 ├── .streamlit/config.toml  # Light and dark theme
 ├── requirements.txt        # pip install (Ollama backend, any OS)
@@ -111,8 +112,9 @@ llm-rag-local/
 ├── requirements-dev.txt    # Extra tools for the browser tests
 ├── pytest.ini              # Test settings (the `browser` marker)
 ├── tests/                  # pytest suite (runs offline, no GPU needed)
-├── .github/workflows/      # CI: tests on Linux, Windows and macOS
+├── .github/workflows/      # CI: tests on Linux, Windows and macOS, and the retrieval evaluation
 ├── docs/                   # README screenshot
+├── examples/eval/          # Example documents and questions for evaluate_retrieval.py
 ├── LICENSE                 # MIT
 ├── chats/                  # Saved chat sessions (auto-created, gitignored)
 └── chroma_db/              # Vector database (auto-created, gitignored)
@@ -183,6 +185,38 @@ pytest                      # everything, browser tests included (a few minutes)
 
 All tests run offline, without a GPU, Ollama or model downloads: they use a small stand-in embedding model (`tests/fake_embedder.py`), a temporary ChromaDB and a fake Ollama server (`tests/fake_ollama.py`). GitHub Actions runs them on Linux, Windows and macOS for every pull request.
 
+## Evaluating Retrieval
+
+`evaluate_retrieval.py` measures how often the search finds the passage that answers a question, so you can tell whether a change (chunk size, overlap, another embedding model) makes answers better or worse. It builds a temporary index, so your own `chroma_db/` is left alone.
+
+```bash
+python evaluate_retrieval.py run examples/eval/questions.json
+```
+
+The example set is 22 questions about four small documents in `examples/eval/`. To evaluate with your own documents, put them in a folder (`test_docs/` is gitignored) with a `questions.json` next to them:
+
+```json
+{"questions": [
+  {"question": "When do the backups run?",
+   "document": "home-server-handbook.pdf",
+   "quote": "Nightly backups run at 02:00 with restic"}
+]}
+```
+
+`quote` is text copied from the document that answers the question; case, punctuation and line breaks don't matter. Ask questions the way you would in the chat, in your own words rather than the document's, since that's what the search has to cope with.
+
+To get started faster, let your model draft the questions, then review them (fix or delete the weak ones, add your own) and rename the file to `questions.json`:
+
+```bash
+python evaluate_retrieval.py draft test_docs --count 20        # writes test_docs/questions-draft.json
+python evaluate_retrieval.py run test_docs/questions.json
+python evaluate_retrieval.py run test_docs/questions.json --chunk-size 150 --chunk-overlap 20
+```
+
+The report's headline is how many questions the app would have answered from the right passage: in the top **Context chunks** results, with a similarity above `min_similarity`. It also shows how often the right passage ranks first or in the top 3 or 10, and lists the questions that missed with what came back instead. Add `--json results.json` to keep the full results for comparing runs.
+
+A GitHub Actions workflow runs the example set whenever retrieval code changes and shows the report on the run's summary page.
+
 ## Performance
 
 | Metric | Value |
@@ -204,7 +238,7 @@ All tests run offline, without a GPU, Ollama or model downloads: they use a smal
 
 **Switching models uses a lot of VRAM** — the previous Hugging Face model is released when you switch. Ollama keeps a model loaded for a few minutes after its last use, and unloads it sooner if memory is needed. If you run out of memory, restart the app.
 
-**Poor retrieval quality** — increase **Context chunks** in the sidebar, or lower `min_similarity` in `config.py`. When no chunk clears the threshold, the answer is marked as coming from the model's general knowledge.
+**Poor retrieval quality** — increase **Context chunks** in the sidebar, or lower `min_similarity` in `config.py`. When no chunk clears the threshold, the answer is marked as coming from the model's general knowledge. To see which questions miss and try other settings, see [Evaluating Retrieval](#evaluating-retrieval).
 
 **Upgrading from an older version** — on first launch, an existing `chroma_db/` is migrated automatically to cosine similarity (a one-time re-embedding of the stored chunks). Older versions stored uploads under a `temp_` prefix (e.g. `temp_report.pdf`); delete those on the Documents page and re-upload to get clean names. PDFs indexed before page numbers were recorded are indexed again when re-uploaded, to pick up their pages. Documents indexed before the switch to 200-token chunks keep their old, larger chunks (whose second half isn't searchable) until you re-upload them. Re-uploading an unchanged file is normally skipped, but not when the chunk settings it was indexed with differ from the current ones, so a re-upload always picks up new `chunk_size`/`chunk_overlap` values.
 
