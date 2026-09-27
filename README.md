@@ -2,6 +2,7 @@
 
 ![Python](https://img.shields.io/badge/python-3.11-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
+[![Tests](https://github.com/BillMentzinis/llm-rag-local/actions/workflows/tests.yml/badge.svg)](https://github.com/BillMentzinis/llm-rag-local/actions/workflows/tests.yml)
 
 A local Retrieval-Augmented Generation (RAG) chat application with a Streamlit UI. Runs entirely on your machine — no cloud API keys required.
 
@@ -94,7 +95,7 @@ Switch models using the **Model** selector in the chat sidebar: Ollama models ar
 ## File Structure
 
 ```
-LLM/
+llm-rag-local/
 ├── streamlit_app.py        # Main Streamlit UI
 ├── rag_pipeline.py         # RAG orchestration
 ├── llm_backends.py         # Ollama and Hugging Face model backends
@@ -105,7 +106,10 @@ LLM/
 ├── .streamlit/config.toml  # Light and dark theme
 ├── requirements.txt        # pip install (Ollama backend, any OS)
 ├── environment.yml         # Conda environment (includes CUDA, for Hugging Face models)
+├── requirements-dev.txt    # Extra tools for the browser tests
+├── pytest.ini              # Test settings (the `browser` marker)
 ├── tests/                  # pytest suite (runs offline, no GPU needed)
+├── .github/workflows/      # CI: tests on Linux, Windows and macOS
 ├── LICENSE                 # MIT
 ├── chats/                  # Saved chat sessions (auto-created, gitignored)
 └── chroma_db/              # Vector database (auto-created, gitignored)
@@ -162,11 +166,19 @@ All parameters are in `config.py`:
 ## Running Tests
 
 ```bash
-pip install pytest   # already included in requirements.txt and environment.yml
-pytest tests
+pip install pytest          # already included in requirements.txt and environment.yml
+pytest -m "not browser"     # unit tests, plus the app driven headlessly (about 15 seconds)
 ```
 
-The tests use a small stand-in embedding model, a temporary ChromaDB and a fake Ollama server (`tests/fake_ollama.py`), so they run offline without a GPU, Ollama or model downloads.
+The browser tests serve the real app and drive it in Chromium:
+
+```bash
+pip install -r requirements-dev.txt
+playwright install chromium
+pytest                      # everything, browser tests included (a few minutes)
+```
+
+All tests run offline, without a GPU, Ollama or model downloads: they use a small stand-in embedding model (`tests/fake_embedder.py`), a temporary ChromaDB and a fake Ollama server (`tests/fake_ollama.py`). GitHub Actions runs them on Linux, Windows and macOS for every pull request.
 
 ## Performance
 

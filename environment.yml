@@ -25,7 +25,7 @@ dependencies:
     # Documents and retrieval
     - sentence-transformers
     - chromadb
-    - pymupdf
+    - pymupdf>=1.24.3         # `import pymupdf` (the old `fitz` name is deprecated)
     # App
     - streamlit>=1.56         # st.iframe (copy button); separate light/dark themes
     # Tests

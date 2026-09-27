@@ -654,6 +654,11 @@ def respond(prompt: str, pipeline: RAGPipeline):
 
     st.session_state.messages.append(message)
 
+    # The sidebar was drawn before this answer, while the chat was still empty
+    # (so Save was disabled); redraw once so it reflects the chat's first answer
+    if len(st.session_state.messages) == 2:
+        st.rerun()
+
 
 def record_stream(pieces, message: dict):
     """

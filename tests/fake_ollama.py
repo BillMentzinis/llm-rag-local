@@ -53,7 +53,8 @@ class FakeOllama:
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
 
     def start(self):
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        # A short poll keeps stop() quick
+        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         return self
 
     def stop(self):
