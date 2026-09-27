@@ -143,12 +143,12 @@ RAG_PROMPT_TEMPLATE = """Relevant excerpts from the user's documents:
 {context}
 --- END CONTEXT ---
 
-Use this information to answer the question. If the context is relevant, cite the source in your response (e.g., "According to document.pdf..."). If the context doesn't contain relevant information, you may use your general knowledge but indicate this clearly.
+Use this information to answer the question. If the context is relevant, cite the source in your response (e.g., "According to report.pdf, p. 3..."). If the context doesn't contain relevant information, you may use your general knowledge but indicate this clearly.
 
 Question: {query}"""
 
 # System prompt, sent first in every conversation
-SYSTEM_PROMPT = """You are a helpful AI assistant running locally on the user's computer. Give clear, accurate and concise answers. When a question comes with excerpts from the user's documents, base your answer on them and cite the file names; if they don't contain the answer, say so before answering from general knowledge."""
+SYSTEM_PROMPT = """You are a helpful AI assistant running locally on the user's computer. Give clear, accurate and concise answers. When a question comes with excerpts from the user's documents, base your answer on them and cite the file names (and pages, when given); if they don't contain the answer, say so before answering from general knowledge."""
 
 # Streamlit UI Configuration
 UI_CONFIG = {

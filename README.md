@@ -6,6 +6,8 @@
 
 A local Retrieval-Augmented Generation (RAG) chat application with a Streamlit UI. Runs entirely on your machine — no cloud API keys required.
 
+![The chat page: a question answered from an indexed PDF, citing its pages](docs/screenshot.png)
+
 ## Quick Start
 
 There are two ways to run the model. Pick one; you can switch between them from the sidebar at any time.
@@ -59,8 +61,8 @@ To stop the app, press `Ctrl+C` in the terminal running it.
 - Streaming responses: text appears as it's generated, with a **Stop generating** button that halts the model and keeps the partial answer
 - **Copy** any answer (as raw Markdown) and **Regenerate** the latest one
 - Light and dark themes that follow your system setting, and a status bar showing the model, whether answers use your documents, and GPU memory in use
-- RAG support: upload documents and get cited, grounded answers
-- Chat history: save, load, and delete named chat sessions (stored as JSON)
+- RAG support: upload documents and get cited, grounded answers; sources from PDFs show the page they come from
+- Chat history: save, load, and delete named chat sessions (stored as JSON; chats with the same name are kept apart, e.g. "hello (2)")
 - Supported file types: PDF, TXT, MD, and common code files
 - Document management: upload, index, summarize, delete, view stats
 - Persistent vector storage with ChromaDB
@@ -110,6 +112,7 @@ llm-rag-local/
 ├── pytest.ini              # Test settings (the `browser` marker)
 ├── tests/                  # pytest suite (runs offline, no GPU needed)
 ├── .github/workflows/      # CI: tests on Linux, Windows and macOS
+├── docs/                   # README screenshot
 ├── LICENSE                 # MIT
 ├── chats/                  # Saved chat sessions (auto-created, gitignored)
 └── chroma_db/              # Vector database (auto-created, gitignored)
@@ -129,13 +132,13 @@ The app has two pages, switched from the bar at the top: **Chat** and **Document
 
 1. **Add documents** — on the **Documents** page, upload files and click **Process documents**. Uploading a file with the same name as an indexed one replaces it; unchanged files are skipped
 2. **Turn on RAG** — switch on **Answer from documents** in the chat sidebar, optionally focusing on a single document
-3. **Ask questions** — the model retrieves relevant chunks and cites sources
+3. **Ask questions** — the model retrieves relevant chunks and cites sources; open **Sources** under an answer to see the excerpts used, with page numbers for PDFs
 
 The Documents page also lists what's indexed, and can **Summarize** a document into the chat, **Delete** one, or **Clear all** (after a confirmation).
 
 ### Chat History
 
-- **Save** — saves the current conversation to `chats/`, named after your first message
+- **Save** — saves the current conversation to `chats/`, named after your first message (a number is added if that name is taken)
 - **New chat** — saves the current conversation and starts a fresh one
 - **Chats** list — click a chat to open it (the current one is saved first); the bin icon deletes it
 
@@ -203,7 +206,7 @@ All tests run offline, without a GPU, Ollama or model downloads: they use a smal
 
 **Poor retrieval quality** — increase **Context chunks** in the sidebar, or lower `min_similarity` in `config.py`. When no chunk clears the threshold, the answer is marked as coming from the model's general knowledge.
 
-**Upgrading from an older version** — on first launch, an existing `chroma_db/` is migrated automatically to cosine similarity (a one-time re-embedding of the stored chunks). Older versions stored uploads under a `temp_` prefix (e.g. `temp_report.pdf`); delete those on the Documents page and re-upload to get clean names. Documents indexed before the switch to 200-token chunks keep their old, larger chunks (whose second half isn't searchable) until you re-upload them. Re-uploading an unchanged file is normally skipped, but not when the chunk settings it was indexed with differ from the current ones, so a re-upload always picks up new `chunk_size`/`chunk_overlap` values.
+**Upgrading from an older version** — on first launch, an existing `chroma_db/` is migrated automatically to cosine similarity (a one-time re-embedding of the stored chunks). Older versions stored uploads under a `temp_` prefix (e.g. `temp_report.pdf`); delete those on the Documents page and re-upload to get clean names. PDFs indexed before page numbers were recorded are indexed again when re-uploaded, to pick up their pages. Documents indexed before the switch to 200-token chunks keep their old, larger chunks (whose second half isn't searchable) until you re-upload them. Re-uploading an unchanged file is normally skipped, but not when the chunk settings it was indexed with differ from the current ones, so a re-upload always picks up new `chunk_size`/`chunk_overlap` values.
 
 **Out of memory** — reduce `max_new_tokens`, close other GPU apps, or switch to a smaller model.
 

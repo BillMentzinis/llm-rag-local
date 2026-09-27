@@ -43,6 +43,23 @@ def select_history(history: Optional[List[Dict]], max_turns: int) -> List[List[D
     return turns[-max_turns:] if max_turns > 0 else []
 
 
+def source_label(metadata: Dict) -> str:
+    """
+    Name a chunk's source: its file and pages (PDFs), or its chunk number.
+
+    Args:
+        metadata: The chunk's metadata
+
+    Returns:
+        e.g. "report.pdf, p. 3", "report.pdf, pp. 3-4" or "notes.txt, Chunk 2"
+    """
+    filename = metadata.get("filename", "unknown")
+    first, last = metadata.get("page_start"), metadata.get("page_end", metadata.get("page_start"))
+    if first is None:
+        return f"{filename}, Chunk {metadata.get('chunk_index', 0) + 1}"
+    return f"{filename}, p. {first}" if last == first else f"{filename}, pp. {first}-{last}"
+
+
 class RAGPipeline:
     """
     Coordinates RAG workflow: document ingestion, retrieval, and context-enhanced generation.
@@ -83,7 +100,9 @@ class RAGPipeline:
         try:
             filename = os.path.basename(file_path)
             previous = self.vector_store.get_document_metadata(filename)
-            if (previous
+            # PDFs indexed before page numbers were recorded are indexed again
+            has_pages = "page_start" in (previous or {}) or not filename.lower().endswith(".pdf")
+            if (previous and has_pages
                     and previous.get("chunk_config") == self.doc_processor.chunk_config
                     and previous.get("content_hash") == self.doc_processor.compute_file_hash(file_path)):
                 return {
@@ -160,11 +179,7 @@ class RAGPipeline:
 
         context_parts = []
         for chunk in context_chunks:
-            filename = chunk["metadata"].get("filename", "unknown")
-            chunk_idx = chunk["metadata"].get("chunk_index", 0)
-            text = chunk["text"]
-
-            context_parts.append(f"[Source: {filename}, Chunk {chunk_idx + 1}]\n{text}")
+            context_parts.append(f"[Source: {source_label(chunk['metadata'])}]\n{chunk['text']}")
 
         return "\n\n".join(context_parts)
 

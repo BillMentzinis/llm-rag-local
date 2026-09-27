@@ -18,10 +18,10 @@ from llm_backends import (
     LLMBackend, OLLAMA_PREFIX, TRANSFORMERS_PREFIX, load_backend, release_all,
     list_ollama_models, model_label, short_label, default_model_key, cuda_available
 )
-from rag_pipeline import RAGPipeline
+from rag_pipeline import RAGPipeline, source_label
 from vector_store_manager import VectorStoreManager
 from document_processor import DocumentProcessor
-from chat_manager import save_chat, load_chat, list_chats, delete_chat, auto_name_from_message
+from chat_manager import save_chat, load_chat, list_chats, delete_chat, auto_name_from_message, unique_chat_name
 
 
 NO_CONTEXT_NOTE = "No relevant document context found, so this answer uses the model's general knowledge."
@@ -152,6 +152,10 @@ def initialize_session_state():
     if "current_chat_name" not in st.session_state:
         st.session_state.current_chat_name = None
 
+    # File the current chat is saved in (None until it's first saved)
+    if "current_chat_path" not in st.session_state:
+        st.session_state.current_chat_path = None
+
     if "selected_model" not in st.session_state:
         st.session_state.selected_model = default_model_key(DEFAULT_MODEL, available_ollama_models())
 
@@ -195,9 +199,13 @@ def save_current_chat(announce: bool = True):
     recover_interrupted_response()
     if not st.session_state.messages:
         return
-    name = current_chat_title()
+    if st.session_state.current_chat_path:
+        name = st.session_state.current_chat_name
+    else:
+        name = unique_chat_name(current_chat_title())  # don't overwrite a chat with the same name
     st.session_state.current_chat_name = name
-    save_chat(name, st.session_state.messages)
+    st.session_state.current_chat_path = save_chat(name, st.session_state.messages,
+                                                   st.session_state.current_chat_path)
     if announce:
         notify(f"Saved \u201c{name}\u201d", ":material/check:")
 
@@ -207,11 +215,12 @@ def start_new_chat():
     save_current_chat(announce=False)
     st.session_state.messages = []
     st.session_state.current_chat_name = None
+    st.session_state.current_chat_path = None
 
 
 def open_chat(chat: dict):
     """Switch to a saved chat, saving the current one first (button callback)."""
-    if chat["name"] == st.session_state.current_chat_name:
+    if chat["filepath"] == st.session_state.current_chat_path:
         return
     loaded = load_chat(chat["filepath"])
     if loaded is None:
@@ -220,13 +229,15 @@ def open_chat(chat: dict):
     save_current_chat(announce=False)
     st.session_state.messages = loaded
     st.session_state.current_chat_name = chat["name"]
+    st.session_state.current_chat_path = chat["filepath"]
 
 
 def remove_chat(chat: dict):
     """Delete a saved chat (button callback)."""
     delete_chat(chat["filepath"])
-    if st.session_state.current_chat_name == chat["name"]:
+    if st.session_state.current_chat_path == chat["filepath"]:
         st.session_state.current_chat_name = None
+        st.session_state.current_chat_path = None
     notify(f"Deleted \u201c{chat['name']}\u201d", ":material/delete:")
 
 
@@ -324,7 +335,7 @@ def render_chat_sidebar(pipeline: RAGPipeline):
         if not saved:
             st.caption("Saved chats will appear here.")
         for chat in saved:
-            is_current = chat["name"] == st.session_state.current_chat_name
+            is_current = chat["filepath"] == st.session_state.current_chat_path
             label = chat["name"] if len(chat["name"]) <= 30 else chat["name"][:28].rstrip() + "\u2026"
             with st.container(horizontal=True, horizontal_alignment="distribute", vertical_alignment="center"):
                 st.button(label, key=f"load_{chat['filepath']}", type="secondary" if is_current else "tertiary",
@@ -733,7 +744,7 @@ def render_assistant_details(message: dict, can_regenerate: bool = False):
     if message.get("sources"):
         with st.expander(f"Sources ({len(message['sources'])} chunks used)"):
             for i, source in enumerate(message["sources"]):
-                st.markdown(f"**[{i+1}] {source['metadata']['filename']}** (Chunk {source['metadata']['chunk_index'] + 1}, Similarity: {source['similarity']:.2f})")
+                st.markdown(f"**[{i+1}] {source_label(source['metadata'])}** (Similarity: {source['similarity']:.2f})")
                 st.text(source["text"][:200] + "..." if len(source["text"]) > 200 else source["text"])
                 st.divider()
 

@@ -1,7 +1,7 @@
 import pytest
 
 from document_processor import DocumentProcessor
-from rag_pipeline import RAGPipeline
+from rag_pipeline import RAGPipeline, source_label
 
 
 @pytest.fixture
@@ -71,3 +71,56 @@ def test_retrieve_context_honours_document_filter(pipeline, tmp_path):
 def test_ingest_failure_is_reported(pipeline, tmp_path):
     result = pipeline.ingest_document(str(tmp_path / "missing.txt"))
     assert result["success"] is False
+
+
+def _write_pdf(tmp_path, name, pages):
+    import pymupdf
+
+    path = tmp_path / name
+    pdf = pymupdf.open()
+    for text in pages:
+        pdf.new_page().insert_text((72, 72), text)
+    pdf.save(path)
+    pdf.close()
+    return str(path)
+
+
+def test_retrieved_pdf_chunks_carry_their_pages(store, tmp_path):
+    # No overlap, so the second chunk holds no text from page 1
+    pipeline = RAGPipeline(None, vector_store=store, doc_processor=DocumentProcessor(chunk_size=16, chunk_overlap=0))
+    path = _write_pdf(tmp_path, "animals.pdf", ["Cats purr when they are content and sleep in the sun.",
+                                                   "Owls hunt quietly at night over the fields."])
+    pipeline.ingest_document(path)
+
+    [hit] = pipeline.retrieve_context("owls hunt at night", top_k=1)
+
+    assert (hit["metadata"]["page_start"], hit["metadata"]["page_end"]) == (2, 2)
+    assert source_label(hit["metadata"]) == "animals.pdf, p. 2"
+    assert "[Source: animals.pdf, p. 2]" in pipeline.format_context_for_prompt([hit])
+
+
+def test_pdfs_indexed_without_pages_are_indexed_again(pipeline, store, tmp_path):
+    path = _write_pdf(tmp_path, "old.pdf", ["Cats purr when they are content."])
+    pipeline.ingest_document(path)
+    # Remove the pages, as an index made before they were recorded would have it
+    # (update merges metadata, and None deletes a key)
+    ids = store.collection.get(where={"filename": "old.pdf"})["ids"]
+    store.collection.update(ids=ids, metadatas=[{"page_start": None, "page_end": None}] * len(ids))
+    assert "page_start" not in store.get_document_metadata("old.pdf")
+
+    again = pipeline.ingest_document(path)
+    unchanged = pipeline.ingest_document(path)
+
+    assert not again["skipped"] and again["replaced"]
+    assert store.get_document_metadata("old.pdf")["page_start"] == 1
+    assert unchanged["skipped"]
+
+
+@pytest.mark.parametrize("metadata, label", [
+    ({"filename": "report.pdf", "chunk_index": 4, "page_start": 3, "page_end": 3}, "report.pdf, p. 3"),
+    ({"filename": "report.pdf", "chunk_index": 4, "page_start": 3, "page_end": 4}, "report.pdf, pp. 3-4"),
+    ({"filename": "notes.txt", "chunk_index": 1}, "notes.txt, Chunk 2"),
+    ({}, "unknown, Chunk 1"),
+])
+def test_source_labels(metadata, label):
+    assert source_label(metadata) == label

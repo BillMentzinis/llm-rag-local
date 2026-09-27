@@ -196,6 +196,10 @@ class VectorStoreManager:
                 "content_hash": chunk.get("content_hash", ""),
                 "chunk_config": chunk.get("chunk_config", ""),
             }
+            # Pages are only known for PDFs (ChromaDB doesn't accept None values)
+            for key in ("page_start", "page_end"):
+                if key in chunk:
+                    metadata[key] = chunk[key]
             metadatas.append(metadata)
 
         # Generate embeddings before touching existing data
