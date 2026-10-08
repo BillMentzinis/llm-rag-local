@@ -34,7 +34,7 @@ class VectorStoreManager:
             embedding_model_name: Name of sentence-transformers model (default from config)
             collection_name: Name of the ChromaDB collection
             embedding_model: Optional preloaded model exposing encode() and
-                             get_sentence_embedding_dimension() (used by tests)
+                             get_embedding_dimension() (used by tests)
         """
         self.persist_directory = persist_directory or PATHS["chroma_db"]
         self.embedding_model_name = embedding_model_name or RAG_CONFIG["embedding_model"]
@@ -50,7 +50,7 @@ class VectorStoreManager:
             from sentence_transformers import SentenceTransformer
             print(f"Loading embedding model: {self.embedding_model_name}...")
             self.embedding_model = SentenceTransformer(self.embedding_model_name)
-        print(f"Embedding model ready. Dimension: {self.embedding_model.get_sentence_embedding_dimension()}")
+        print(f"Embedding model ready. Dimension: {self.embedding_dimension()}")
 
         # Initialize ChromaDB client
         self.client = chromadb.PersistentClient(
@@ -403,10 +403,16 @@ class VectorStoreManager:
             "total_chunks": self.collection.count(),
             "total_documents": len(documents),
             "embedding_model": self.embedding_model_name,
-            "embedding_dimension": self.embedding_model.get_sentence_embedding_dimension(),
+            "embedding_dimension": self.embedding_dimension(),
             "persist_directory": self.persist_directory,
             "documents": documents
         }
+
+    def embedding_dimension(self) -> int:
+        """Size of the embedding vectors."""
+        # sentence-transformers renamed get_sentence_embedding_dimension; older versions only have the old name
+        get = getattr(self.embedding_model, "get_embedding_dimension", None)
+        return get() if get else self.embedding_model.get_sentence_embedding_dimension()
 
     def is_empty(self) -> bool:
         """

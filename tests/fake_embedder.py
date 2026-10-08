@@ -16,7 +16,7 @@ class FakeEmbedder:
 
     dimension = 64
 
-    def get_sentence_embedding_dimension(self):
+    def get_embedding_dimension(self):
         return self.dimension
 
     def encode(self, texts, show_progress_bar=False, normalize_embeddings=False):

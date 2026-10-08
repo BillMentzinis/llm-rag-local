@@ -25,6 +25,12 @@ A questions file is JSON, next to the documents it asks about:
 "quote" is text copied from the document that answers the question; case,
 punctuation and line breaks don't matter. A search result counts as right when
 it's from that document and holds most of the quote.
+
+Questions the documents can't answer can be listed too, to see whether the
+similarity threshold keeps unrelated excerpts away from them:
+
+    {"questions": [...],
+     "unanswerable": ["What's the capital of Peru?"]}
 """
 
 import argparse
@@ -44,6 +50,7 @@ from document_processor import DocumentProcessor
 from rag_pipeline import source_label
 
 DEPTH = 10  # How many results are ranked for each question
+THRESHOLDS = [round(0.05 * i, 2) for i in range(11)]  # Similarity thresholds compared in the report
 
 DRAFT_PROMPT = """Below is an excerpt from a document called {document}.
 
@@ -137,7 +144,8 @@ def evaluate(questions_path: str, processor: DocumentProcessor = None, embedding
     top_k = top_k or RAG_CONFIG["top_k"]
     min_similarity = RAG_CONFIG["min_similarity"] if min_similarity is None else min_similarity
     with open(questions_path, encoding="utf-8") as f:
-        questions = json.load(f)["questions"]
+        questions_file = json.load(f)
+    questions = questions_file.get("questions", [])
     documents = load_documents(os.path.dirname(os.path.abspath(questions_path)), processor)
 
     results, problems = [], []
@@ -179,6 +187,18 @@ def evaluate(questions_path: str, processor: DocumentProcessor = None, embedding
                 "retrieved": [source_label(h["metadata"]) for h in hits[:3]],
             })
 
+        unanswerable = []
+        for question in questions_file.get("unanswerable", []):
+            with contextlib.redirect_stdout(io.StringIO()):
+                hits = store.search(question, top_k=top_k, min_similarity=-1.0)
+            best = max((h["similarity"] for h in hits), default=None)
+            unanswerable.append({
+                "question": question,
+                "best_similarity": best,
+                "given_excerpts": best is not None and best >= min_similarity,
+                "retrieved": [source_label(h["metadata"]) for h in hits[:3]],
+            })
+
     return {
         "questions_file": questions_path,
         "documents": len(documents),
@@ -188,8 +208,10 @@ def evaluate(questions_path: str, processor: DocumentProcessor = None, embedding
         "top_k": top_k,
         "min_similarity": min_similarity,
         "results": results,
+        "unanswerable": unanswerable,
         "problems": problems,
         "summary": summarize(results, top_k, min_similarity),
+        "thresholds": compare_thresholds(results, unanswerable, top_k),
     }
 
 
@@ -211,6 +233,21 @@ def summarize(results: List[Dict], top_k: int, min_similarity: float) -> Dict:
                                if r["rank"] is not None and r["rank"] <= top_k and r["similarity"] < min_similarity),
         "mrr": sum(1 / rank for rank in ranks if rank is not None) / len(results) if results else 0.0,
     }
+
+
+def compare_thresholds(results: List[Dict], unanswerable: List[Dict], top_k: int) -> List[Dict]:
+    """
+    For each threshold in THRESHOLDS: how many questions the app would answer
+    from the right passage, and how many unanswerable ones it would still give
+    excerpts to. Raising the threshold lowers both.
+    """
+    return [{
+        "threshold": threshold,
+        "found": sum(1 for r in results
+                     if r["rank"] is not None and r["rank"] <= top_k and r["similarity"] >= threshold),
+        "unanswerable_given_excerpts": sum(1 for u in unanswerable
+                                           if u["best_similarity"] is not None and u["best_similarity"] >= threshold),
+    } for threshold in THRESHOLDS]
 
 
 def format_report(report: Dict) -> str:
@@ -247,6 +284,25 @@ def format_report(report: Dict) -> str:
             rank = str(r["rank"]) if r["rank"] else f"not in top {DEPTH}"
             similarity = f"{r['similarity']:.2f}" if r["similarity"] is not None else "-"
             lines.append(f"| {r['question']} | {r['expected']} | {rank} | {similarity} | {'; '.join(r['retrieved'])} |")
+    unanswerable = report["unanswerable"]
+    if unanswerable:
+        given = sum(1 for u in unanswerable if u["given_excerpts"])
+        lines += ["", "### Questions the documents can't answer", "",
+                  f"The app would pass excerpts to the model for {given} of {len(unanswerable)} "
+                  f"(their best result has similarity of at least {threshold:.2f}).", "",
+                  "| Question | Best similarity | Top results |", "|---|---|---|"]
+        for u in unanswerable:
+            best = f"{u['best_similarity']:.2f}" if u["best_similarity"] is not None else "-"
+            lines.append(f"| {u['question']} | {best} | {'; '.join(u['retrieved'])} |")
+    if n:
+        u_count = len(unanswerable)
+        lines += ["", "### Similarity thresholds compared", "",
+                  "| Threshold | Answered from the right passage | Unanswerable questions given excerpts |",
+                  "|---|---|---|"]
+        for row in report["thresholds"]:
+            current = " (current)" if abs(row["threshold"] - threshold) < 1e-9 else ""
+            excerpts = f"{row['unanswerable_given_excerpts']}/{u_count}" if u_count else "-"
+            lines.append(f"| {row['threshold']:.2f}{current} | {share(row['found'])} | {excerpts} |")
     if report["problems"]:
         lines += ["", "### Questions skipped", ""] + [f"- {p}" for p in report["problems"]]
     return "\n".join(lines)

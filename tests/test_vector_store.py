@@ -3,6 +3,7 @@ import pytest
 from chromadb.config import Settings
 
 from conftest import make_chunks
+from fake_embedder import FakeEmbedder
 from vector_store_manager import VectorStoreManager
 
 CAT = "the cat sat on the mat"
@@ -124,3 +125,14 @@ def test_migration_interrupted_before_delete_restarts(tmp_path, embedder):
     assert [c.name for c in store.client.list_collections()] == ["documents"]
     assert store.collection.metadata["hnsw:space"] == "cosine"
     assert store.collection.count() == 1
+
+
+def test_embedding_dimension_works_with_older_sentence_transformers(tmp_path):
+    class OldEmbedder(FakeEmbedder):
+        get_embedding_dimension = None  # only the old name, as before sentence-transformers renamed it
+
+        def get_sentence_embedding_dimension(self):
+            return self.dimension
+
+    store = VectorStoreManager(persist_directory=str(tmp_path / "chroma"), embedding_model=OldEmbedder())
+    assert store.embedding_dimension() == FakeEmbedder.dimension

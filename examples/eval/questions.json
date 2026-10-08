@@ -110,5 +110,15 @@
       "document": "bike-maintenance.md",
       "quote": "Clean and lube the chain every 300 km, and after every ride in the rain"
     }
+  ],
+  "unanswerable": [
+    "What's the capital of Peru?",
+    "Who wrote Pride and Prejudice?",
+    "How do I convert Celsius to Fahrenheit?",
+    "What's a good stretching routine before a run?",
+    "What graphics card is in the server?",
+    "How much does the Backblaze bucket cost each month?",
+    "Can I make the sourdough with rye flour?",
+    "How often should the bike's suspension fork be serviced?"
   ]
 }
