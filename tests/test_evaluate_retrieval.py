@@ -108,6 +108,39 @@ def test_a_passage_under_the_similarity_threshold_isnt_found(folder):
     assert "### Not found by the app" in ev.format_report(report)
 
 
+def test_unanswerable_questions_and_the_threshold_table(folder):
+    path = folder / "questions.json"
+    path.write_text(json.dumps({
+        "questions": [{"question": "how many hours does a cat sleep", "document": "cats.txt",
+                       "quote": "sleeps for around fifteen hours"}],
+        "unanswerable": ["cats purr content", "zebra quantum"],
+    }), encoding="utf-8")
+
+    report = ev.evaluate(str(path), DocumentProcessor(), embedding_model=FakeEmbedder(), min_similarity=0.3)
+
+    near, far = report["unanswerable"]
+    assert near["best_similarity"] > 0.3 and near["given_excerpts"]  # shares words with cats.txt
+    assert far["best_similarity"] < near["best_similarity"]
+    rows = {row["threshold"]: row for row in report["thresholds"]}
+    # The stand-in embedder's vectors are word counts, so no similarity is below 0
+    assert rows[0.0]["found"] == 1 and rows[0.0]["unanswerable_given_excerpts"] == 2
+    assert rows[0.3]["unanswerable_given_excerpts"] == 1 + (far["best_similarity"] >= 0.3)
+    for low, high in zip(report["thresholds"], report["thresholds"][1:]):
+        assert high["found"] <= low["found"]
+        assert high["unanswerable_given_excerpts"] <= low["unanswerable_given_excerpts"]
+
+    text = ev.format_report(report)
+    assert "### Questions the documents can't answer" in text
+    given = 1 + far["given_excerpts"]
+    assert f"The app would pass excerpts to the model for {given} of 2" in text
+    assert "| 0.30 (current) |" in text
+
+
+def test_the_example_set_has_unanswerable_questions():
+    with open(EXAMPLE, encoding="utf-8") as f:
+        assert len(json.load(f)["unanswerable"]) >= 5
+
+
 class ScriptedBackend(LLMBackend):
     """Answers with the given replies in turn, and records the prompts."""
 
