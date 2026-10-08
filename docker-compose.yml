@@ -1,0 +1,42 @@
+# The app and Ollama, together:
+#
+#   docker compose up -d
+#   docker compose exec ollama ollama pull llama3.1:8b
+#
+# then open http://localhost:8501. Your documents, chats and Ollama's models
+# are kept in Docker volumes, so they survive restarts and rebuilds.
+
+services:
+  ollama:
+    image: ollama/ollama
+    volumes:
+      - ollama:/root/.ollama
+    restart: unless-stopped
+    # To run models on an NVIDIA GPU (needs the NVIDIA Container Toolkit), uncomment:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  app:
+    build: .
+    image: llm-rag-local
+    ports:
+      # Only this computer can open the app. The app has no login, so think
+      # twice before opening it to your network with "8501:8501".
+      - "127.0.0.1:8501:8501"
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      LLM_MODEL: ${LLM_MODEL:-ollama:llama3.1:8b}
+    volumes:
+      - data:/data
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+volumes:
+  ollama:
+  data:

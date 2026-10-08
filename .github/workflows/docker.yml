@@ -1,0 +1,83 @@
+name: Docker
+
+# Builds the image and checks the app works in it: it indexes a document and
+# answers from it (with a fake Ollama), and keeps the document across a restart.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**.py"
+      - requirements.txt
+      - .streamlit/**
+      - Dockerfile
+      - .dockerignore
+      - docker-compose.yml
+      - .github/workflows/docker.yml
+  pull_request:
+    paths:
+      - "**.py"
+      - requirements.txt
+      - .streamlit/**
+      - Dockerfile
+      - .dockerignore
+      - docker-compose.yml
+      - .github/workflows/docker.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: Build and smoke-test the image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: llm-rag-local
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Check docker-compose.yml
+        run: docker compose config --quiet
+      - name: The embedding model works offline
+        run: >
+          docker run --rm --network none -e HF_HUB_OFFLINE=1 llm-rag-local
+          python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install Playwright
+        run: |
+          pip install -r requirements-dev.txt
+          python -m playwright install --with-deps chromium
+      - name: Start a fake Ollama and the app
+        run: |
+          python tests/fake_ollama.py --port 11500 --delay 0.01 > fake-ollama.log 2>&1 &
+          docker run -d --name app --network host -v llm-rag-data:/data \
+            -e OLLAMA_HOST=http://127.0.0.1:11500 -e LLM_MODEL=ollama:llama3.1:8b llm-rag-local
+          for i in $(seq 60); do curl -fsS http://127.0.0.1:8501/_stcore/health && exit 0; sleep 2; done
+          exit 1
+      - name: Index a document and answer from it
+        run: python tests/docker_smoke.py http://127.0.0.1:8501
+      - name: The document is kept across a restart
+        run: |
+          docker restart app
+          for i in $(seq 60); do curl -fsS http://127.0.0.1:8501/_stcore/health && break; sleep 2; done
+          python tests/docker_smoke.py http://127.0.0.1:8501 --persisted
+      - name: Show the logs
+        if: always()
+        run: |
+          docker logs app || true
+          cat fake-ollama.log || true

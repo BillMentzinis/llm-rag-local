@@ -135,9 +135,12 @@ FILE_CONFIG = {
 }
 
 # Path Configuration
+# The document index and saved chats are kept next to the app, or under
+# DATA_DIR when it's set (the Docker image keeps them on a volume at /data)
+DATA_DIR = os.environ.get("DATA_DIR") or os.path.dirname(os.path.abspath(__file__))
 PATHS = {
-    "chroma_db": os.path.join(os.path.dirname(__file__), "chroma_db"),
-    "chats": os.path.join(os.path.dirname(__file__), "chats"),
+    "chroma_db": os.path.join(DATA_DIR, "chroma_db"),
+    "chats": os.path.join(DATA_DIR, "chats"),
 }
 
 # RAG Prompt Template
