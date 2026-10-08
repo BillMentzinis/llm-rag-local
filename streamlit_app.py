@@ -146,9 +146,6 @@ def initialize_session_state():
     if "selected_document" not in st.session_state:
         st.session_state.selected_document = "All Documents"
 
-    if "document_summaries" not in st.session_state:
-        st.session_state.document_summaries = {}
-
     if "current_chat_name" not in st.session_state:
         st.session_state.current_chat_name = None
 
@@ -420,8 +417,9 @@ def render_documents_page(pipeline: RAGPipeline):
             options=[doc["filename"] for doc in documents],
             key="doc_action_selector"
         )
-        if st.button("Summarize", icon=":material/summarize:", key="summarize_btn"):
-            summarize_document(selected_doc, pipeline)
+        if st.button("Summarize", icon=":material/summarize:", key="summarize_btn",
+                     help="Summarize the whole document in the current chat"):
+            request_summary(selected_doc)
         if st.button("Delete", icon=":material/delete:", key="delete_btn"):
             count = pipeline.delete_document(selected_doc)
             notify(f"Deleted {selected_doc} ({count} chunks)", ":material/delete:")
@@ -430,73 +428,25 @@ def render_documents_page(pipeline: RAGPipeline):
             st.markdown(f"Remove all **{len(documents)}** documents from the index? This can't be undone.")
             if st.button("Clear all documents", type="primary", key="confirm_clear"):
                 count = pipeline.clear_all_documents()
-                st.session_state.document_summaries.clear()
                 notify(f"Cleared all documents ({count} chunks)", ":material/delete_sweep:")
                 st.rerun()
 
 
-def summarize_document(filename: str, pipeline: RAGPipeline):
+def request_summary(filename: str):
     """
-    Generate a summary for a specific document.
+    Ask for a summary of a whole document in the current chat, and go there to write it.
 
     Args:
         filename: Name of the document to summarize
-        pipeline: RAG pipeline instance
     """
-    pipeline.llm = get_llm()
-    if pipeline.llm is None:
+    if get_llm() is None:
         key, error = st.session_state.llm_error
         st.error(f"Can't summarize: {model_label(key)} didn't load ({error}). "
                  "Pick another model in the Chat page's sidebar.", icon=":material/error:")
         return
-
-    with st.spinner(f"Generating summary for {filename}..."):
-        # Get all chunks from this document
-        doc_info = pipeline.vector_store.get_document_info(filename)
-
-        if not doc_info:
-            st.error(f"Document {filename} not found")
-            return
-
-        # Retrieve multiple chunks to get good coverage
-        summary_prompt = f"Provide a comprehensive summary of the key points and main topics covered in {filename}. Include the most important information and insights."
-
-        # Retrieve more chunks for summarization, from this document only
-        context_chunks = pipeline.retrieve_context(
-            query=summary_prompt,
-            top_k=min(10, doc_info["chunk_count"]),  # Get up to 10 chunks
-            min_similarity=0.0,  # Any chunk of the document is useful for a summary
-            filter_metadata={"filename": filename}
-        )
-
-        if not context_chunks:
-            st.warning(f"Could not retrieve content from {filename}")
-            return
-
-        # Generate summary
-        gen_config = {**GENERATION_CONFIG, "temperature": 0.6}  # a little more focused for summaries
-
-        result = pipeline.generate_response(
-            query=summary_prompt,
-            context_chunks=context_chunks,
-            generation_config=gen_config
-        )
-
-        # Store summary
-        st.session_state.document_summaries[filename] = result["response"]
-
-        # Add to chat history
-        st.session_state.messages.append({
-            "role": "user",
-            "content": f"Summarize {filename}"
-        })
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": result["response"],
-            "sources": context_chunks
-        })
-
-        st.switch_page(PAGES["chat"])
+    st.session_state.messages.append({"role": "user", "content": f"Summarize {filename}", "summarize": filename})
+    st.session_state.summary_requested = True
+    st.switch_page(PAGES["chat"])
 
 
 def process_uploaded_files(uploaded_files, pipeline: RAGPipeline):
@@ -590,7 +540,9 @@ def render_chat_interface(pipeline: RAGPipeline):
     # Read the chat input first (it's pinned to the bottom wherever it's called),
     # so the history knows whether a new answer is about to be generated
     prompt = st.chat_input("Ask me anything...", disabled=pipeline.llm is None)
-    regenerate = st.session_state.pop("regenerate_requested", False) and pipeline.llm is not None
+    regenerate = st.session_state.pop("regenerate_requested", False)
+    summarize = st.session_state.pop("summary_requested", False)  # from the Documents page
+    answer_last = (regenerate or summarize) and pipeline.llm is not None
 
     if not st.session_state.messages and not prompt:
         render_welcome()
@@ -618,8 +570,8 @@ def render_chat_interface(pipeline: RAGPipeline):
 
         respond(prompt, pipeline)
 
-    # Regenerate: the last answer was already removed, so answer the last question again
-    elif regenerate and messages and messages[-1]["role"] == "user":
+    # Regenerate (the last answer was already removed) or a summary request: answer the last message
+    elif answer_last and messages and messages[-1]["role"] == "user":
         respond(messages[-1]["content"], pipeline)
 
 
@@ -642,15 +594,22 @@ def respond(prompt: str, pipeline: RAGPipeline):
         stop_slot = st.empty()
         stop_slot.button("Stop generating", key="stop_generation")
 
+        with body:
+            progress = st.empty()  # How far a long document's summary has got
         stream = None
         try:
             with body:
                 with st.spinner("Thinking..."):
-                    response_data = start_response(prompt, pipeline)
+                    response_data = start_response(prompt, pipeline,
+                                                   lambda done, label: progress.progress(done, text=label))
                     message["sources"] = response_data["sources"]
                     message["rag_no_context"] = response_data["rag_attempted"] and not response_data["sources"]
+                    if "summary_of" in response_data:
+                        message["summary_of"] = response_data["summary_of"]
+                        message["summary_parts"] = response_data["parts"]
                     stream = response_data["stream"]
                     first_piece = next(stream, "")
+                progress.empty()
                 st.write_stream(record_stream(itertools.chain([first_piece], stream), message))
         except Exception as e:
             message["error"] = str(e)
@@ -658,6 +617,7 @@ def respond(prompt: str, pipeline: RAGPipeline):
             # Also runs when Streamlit interrupts the run, which stops generation
             if stream is not None:
                 stream.close()
+        progress.empty()  # Also when a summary failed while reading the parts
 
         stop_slot.empty()
         del st.session_state.pending_response
@@ -740,6 +700,11 @@ def render_assistant_details(message: dict, can_regenerate: bool = False):
     if message.get("rag_no_context"):
         st.caption(NO_CONTEXT_NOTE)
 
+    if message.get("summary_of"):
+        parts = message.get("summary_parts", 1)
+        st.caption(f"Summary of all of {message['summary_of']}"
+                   + (f", read in {parts} parts" if parts > 1 else ""))
+
     # Show sources if available
     if message.get("sources"):
         with st.expander(f"Sources ({len(message['sources'])} chunks used)"):
@@ -751,13 +716,17 @@ def render_assistant_details(message: dict, can_regenerate: bool = False):
     render_message_actions(message, can_regenerate)
 
 
-def start_response(prompt: str, pipeline: RAGPipeline) -> dict:
+def start_response(prompt: str, pipeline: RAGPipeline, on_progress=None) -> dict:
     """
     Retrieve context if RAG is on, and start streaming the response.
+
+    A summary request from the Documents page gets a summary of the whole
+    document instead.
 
     Args:
         prompt: User prompt
         pipeline: RAG pipeline instance
+        on_progress: Called with (fraction done, description) while a long document is read for a summary
 
     Returns:
         Response data dictionary with a "stream" of text pieces
@@ -768,6 +737,11 @@ def start_response(prompt: str, pipeline: RAGPipeline) -> dict:
         "max_new_tokens": st.session_state.max_tokens,
         "temperature": st.session_state.temperature,
     }
+
+    document = st.session_state.messages[-1].get("summarize")
+    if document:
+        result = pipeline.stream_summary(document, gen_config, on_progress)
+        return {**result, "sources": [], "rag_attempted": False, "summary_of": document}
 
     # Earlier messages; the pipeline picks the recent complete question/answer pairs
     history = [

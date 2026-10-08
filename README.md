@@ -64,7 +64,7 @@ To stop the app, press `Ctrl+C` in the terminal running it.
 - RAG support: upload documents and get cited, grounded answers; sources from PDFs show the page they come from
 - Chat history: save, load, and delete named chat sessions (stored as JSON; chats with the same name are kept apart, e.g. "hello (2)")
 - Supported file types: PDF, TXT, MD, and common code files
-- Document management: upload, index, summarize, delete, view stats
+- Document management: upload, index, delete, view stats, and summarize a whole document, however long
 - Persistent vector storage with ChromaDB
 - Configurable generation and retrieval parameters
 
@@ -137,6 +137,8 @@ The app has two pages, switched from the bar at the top: **Chat** and **Document
 3. **Ask questions** — the model retrieves relevant chunks and cites sources; open **Sources** under an answer to see the excerpts used, with page numbers for PDFs
 
 The Documents page also lists what's indexed, and can **Summarize** a document into the chat, **Delete** one, or **Clear all** (after a confirmation).
+
+**Summarize** reads the whole document. One that fits in a single prompt is summarized in one go; a longer one is read in parts of about 3,000 tokens, each summarized in turn (a progress bar shows which), and the part summaries are then combined into one. With a local model that takes roughly 10–30 seconds per part, so a 100-page PDF can take several minutes; **Stop generating** stops it at any point, and **Regenerate** writes it again. The part size and prompts are in `SUMMARY_CONFIG` in `config.py`.
 
 ### Chat History
 

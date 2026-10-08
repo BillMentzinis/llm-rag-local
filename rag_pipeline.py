@@ -4,14 +4,21 @@ Orchestrates document processing, retrieval, and generation for RAG functionalit
 """
 
 import os
-from typing import List, Dict, Optional
+from typing import Callable, List, Dict, Optional, Tuple
 from document_processor import DocumentProcessor
 from llm_backends import LLMBackend
 from vector_store_manager import VectorStoreManager
-from config import CHAT_CONFIG, GENERATION_CONFIG, RAG_CONFIG, RAG_PROMPT_TEMPLATE, SYSTEM_PROMPT
+from config import (CHAT_CONFIG, GENERATION_CONFIG, RAG_CONFIG, RAG_PROMPT_TEMPLATE, SYSTEM_PROMPT,
+                    SUMMARY_CONFIG, SUMMARY_COMBINE_PROMPT, SUMMARY_CONDENSE_PROMPT, SUMMARY_PART_PROMPT,
+                    SUMMARY_WHOLE_PROMPT)
 
 # Rough per-message cost of a chat template's role markers, in tokens
 MESSAGE_OVERHEAD_TOKENS = 8
+
+# Overlap between consecutive chunks shorter than this isn't looked for when
+# joining them back up (a short match is likely a coincidence)
+MIN_OVERLAP_CHARS = 20
+MAX_OVERLAP_CHARS = 1000
 
 
 def select_history(history: Optional[List[Dict]], max_turns: int) -> List[List[Dict]]:
@@ -58,6 +65,77 @@ def source_label(metadata: Dict) -> str:
     if first is None:
         return f"{filename}, Chunk {metadata.get('chunk_index', 0) + 1}"
     return f"{filename}, p. {first}" if last == first else f"{filename}, pp. {first}-{last}"
+
+
+
+def join_chunks(texts: List[str]) -> str:
+    """
+    Join a document's consecutive chunks back into running text, leaving out
+    the text each chunk repeats from the end of the one before.
+
+    Args:
+        texts: Chunk texts, in order
+
+    Returns:
+        The joined text
+    """
+    joined = ""
+    for text in texts:
+        if not joined:
+            joined = text
+            continue
+        longest = min(len(joined), len(text), MAX_OVERLAP_CHARS)
+        overlap = next((k for k in range(longest, MIN_OVERLAP_CHARS - 1, -1) if joined.endswith(text[:k])), 0)
+        joined += text[overlap:] if overlap else "\n\n" + text
+    return joined
+
+
+def page_range(chunks: List[Dict]) -> Optional[Tuple[int, int]]:
+    """First and last page of some chunks of a PDF, or None for other files."""
+    starts = [c["metadata"]["page_start"] for c in chunks if "page_start" in c["metadata"]]
+    ends = [c["metadata"].get("page_end", c["metadata"]["page_start"]) for c in chunks if "page_start" in c["metadata"]]
+    return (min(starts), max(ends)) if starts else None
+
+
+def describe_pages(pages: Optional[Tuple[int, int]]) -> str:
+    """e.g. " (pages 3-7)", " (page 3)", or "" when pages aren't known."""
+    if not pages:
+        return ""
+    return f" (page {pages[0]})" if pages[0] == pages[1] else f" (pages {pages[0]}-{pages[1]})"
+
+
+def split_into_parts(chunks: List[Dict], max_tokens: int, count_tokens: Callable[[str], int]) -> List[Dict]:
+    """
+    Group a document's chunks, in order, into parts of about max_tokens.
+
+    A chunk is never split. Chunk sizes are added up, overlaps included, so a
+    part is never larger than estimated.
+
+    Args:
+        chunks: The document's chunks ({"text", "metadata"}), in order
+        max_tokens: Most tokens in one part
+        count_tokens: Counts the tokens in a text
+
+    Returns:
+        List of {"text", "pages"} dictionaries
+    """
+    return [{"text": join_chunks([c["text"] for c in group]), "pages": page_range(group)}
+            for group in _group_by_tokens(chunks, max_tokens, count_tokens)]
+
+
+def _group_by_tokens(items: List[Dict], max_tokens: int, count_tokens: Callable[[str], int]) -> List[List[Dict]]:
+    """Split items ({"text", ...}), in order, into runs whose texts add up to at most max_tokens."""
+    groups, current, size = [], [], 0
+    for item in items:
+        tokens = count_tokens(item["text"])
+        if current and size + tokens > max_tokens:
+            groups.append(current)
+            current, size = [], 0
+        current.append(item)
+        size += tokens
+    if current:
+        groups.append(current)
+    return groups
 
 
 class RAGPipeline:
@@ -315,6 +393,107 @@ class RAGPipeline:
             Estimated token count, including the chat template's role markers
         """
         return sum(self.estimate_token_count(m["content"]) + MESSAGE_OVERHEAD_TOKENS for m in messages)
+
+    def stream_summary(self, filename: str, generation_config: Dict = None,
+                       on_progress: Callable[[float, str], None] = None) -> Dict:
+        """
+        Start summarizing a whole document, streaming the summary's text.
+
+        A document that fits in one prompt is summarized in one go. A longer one
+        is split into parts that are summarized one by one; the part summaries
+        are then combined (condensed in groups first if they're still too long
+        together). The parts are read when the stream is first iterated, before
+        the summary's first piece arrives; on_progress reports how far that is.
+
+        Args:
+            filename: Name of the indexed document
+            generation_config: Generation parameters for the final summary
+            on_progress: Called with (fraction done, description) while the parts are read
+
+        Returns:
+            Dictionary with "stream" (an iterator of text pieces), "parts"
+            (how many parts the document was read in) and "pages" (first and
+            last page, or None)
+        """
+        if self.llm is None:
+            raise RuntimeError("No language model is loaded")
+        chunks = self.vector_store.get_document_chunks(filename)
+        if not chunks:
+            raise ValueError(f"{filename} isn't in the document index")
+
+        final_config = {**(generation_config or {}), "temperature": SUMMARY_CONFIG["temperature"]}
+        final_tokens = final_config.get("max_new_tokens", GENERATION_CONFIG["max_new_tokens"])
+        reserved = (CHAT_CONFIG["prompt_margin_tokens"] + SUMMARY_CONFIG["prompt_tokens"]
+                    + self.count_prompt_tokens([{"role": "system", "content": SYSTEM_PROMPT}]) + MESSAGE_OVERHEAD_TOKENS)
+        window = self.llm.context_window()
+        part_tokens = min(SUMMARY_CONFIG["part_tokens"], window - SUMMARY_CONFIG["part_summary_tokens"] - reserved)
+        final_budget = window - final_tokens - reserved  # Room for the text in the final prompt
+        if min(part_tokens, final_budget) < 2 * SUMMARY_CONFIG["part_summary_tokens"]:
+            raise RuntimeError("The model's context window is too small to summarize documents "
+                               "(try fewer Max tokens in the generation settings)")
+
+        pages = page_range(chunks)
+        whole = join_chunks([c["text"] for c in chunks])
+        if self.estimate_token_count(whole) <= min(part_tokens, final_budget):
+            prompt = SUMMARY_WHOLE_PROMPT.format(document=filename, text=whole)
+            return {"stream": self.llm.stream_chat(self._summary_messages(prompt), final_config),
+                    "parts": 1, "pages": pages}
+
+        parts = split_into_parts(chunks, part_tokens, self.estimate_token_count)
+        stream = self._summarize_parts(filename, parts, final_config, part_tokens, final_budget, on_progress)
+        return {"stream": stream, "parts": len(parts), "pages": pages}
+
+    def _summarize_parts(self, filename: str, parts: List[Dict], final_config: Dict, part_tokens: int,
+                         final_budget: int, on_progress: Optional[Callable[[float, str], None]]):
+        """Summarize each part, then stream the combined summary (see stream_summary)."""
+        part_config = {**final_config, "max_new_tokens": SUMMARY_CONFIG["part_summary_tokens"]}
+        summaries = []
+        for i, part in enumerate(parts, 1):
+            pages = describe_pages(part["pages"])
+            prompt = SUMMARY_PART_PROMPT.format(part=i, parts=len(parts), document=filename, pages=pages,
+                                                text=part["text"])
+            summary = self._generate(prompt, part_config, on_progress, (i - 1) / len(parts), 1 / len(parts),
+                                     f"Reading part {i} of {len(parts)}{pages}")
+            summaries.append(f"Part {i}{pages}:\n{summary}")
+
+        # Condense the part summaries in groups until they fit in the final prompt together
+        while len(summaries) > 1 and self.estimate_token_count("\n\n".join(summaries)) > final_budget:
+            groups = [[s["text"] for s in group] for group in
+                      _group_by_tokens([{"text": s} for s in summaries], part_tokens, self.estimate_token_count)]
+            if len(groups) >= len(summaries):
+                break  # Can't condense any further; send what there is
+            summaries = [self._generate(SUMMARY_CONDENSE_PROMPT.format(document=filename,
+                                                                       summaries="\n\n".join(group)),
+                                        part_config, on_progress, 1.0, 0.0, "Combining the part summaries")
+                         for group in groups]
+
+        if on_progress:
+            on_progress(1.0, "Writing the summary")
+        prompt = SUMMARY_COMBINE_PROMPT.format(document=filename, summaries="\n\n".join(summaries))
+        yield from self.llm.stream_chat(self._summary_messages(prompt), final_config)
+
+    def _generate(self, prompt: str, generation_config: Dict, on_progress, start: float, span: float,
+                  label: str) -> str:
+        """Generate a whole response, reporting progress from start to start + span as it arrives."""
+        expected_chars = 4 * generation_config["max_new_tokens"]
+        text = ""
+        if on_progress:
+            on_progress(start, label)
+        stream = self.llm.stream_chat(self._summary_messages(prompt), generation_config)
+        try:
+            for piece in stream:
+                text += piece
+                if on_progress:
+                    on_progress(start + span * min(len(text) / expected_chars, 0.95), label)
+        finally:
+            close = getattr(stream, "close", None)
+            if close:
+                close()  # Stops generation if this run was interrupted
+        return text.strip()
+
+    @staticmethod
+    def _summary_messages(prompt: str) -> List[Dict]:
+        return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}]
 
     def generate_response(self, query: str, context_chunks: List[Dict] = None,
                          history: List[Dict] = None, generation_config: Dict = None) -> Dict:

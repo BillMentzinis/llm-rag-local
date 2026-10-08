@@ -151,6 +151,43 @@ Use this information to answer the question. If the context is relevant, cite th
 
 Question: {query}"""
 
+# Whole-document summaries: a document that doesn't fit in one prompt is
+# summarized part by part, then the part summaries are combined
+SUMMARY_CONFIG = {
+    "part_tokens": 3000,  # Most document tokens summarized in one step (smaller models summarize shorter texts better)
+    "part_summary_tokens": 300,  # Longest summary of one part
+    "prompt_tokens": 250,  # Room for the instructions around the text
+    "temperature": 0.3,
+}
+
+SUMMARY_WHOLE_PROMPT = """Here is the full text of {document}:
+
+--- DOCUMENT ---
+{text}
+--- END DOCUMENT ---
+
+Summarize this document. Start with one or two sentences on what it is and what it's for, then give its main points in the order they appear, as bullet points. Keep important names, numbers and dates. Use only what the document says."""
+
+SUMMARY_PART_PROMPT = """Here is part {part} of {parts} of {document}{pages}:
+
+--- PART ---
+{text}
+--- END PART ---
+
+Summarize this part in a few bullet points, keeping important names, numbers, dates and conclusions. Write only the bullet points."""
+
+SUMMARY_COMBINE_PROMPT = """Here are summaries of consecutive parts of {document}:
+
+{summaries}
+
+Combine them into one summary of the whole document. Start with one or two sentences on what it is and what it's for, then give its main points in order as bullet points. Leave out repetition. Use only what the summaries say."""
+
+SUMMARY_CONDENSE_PROMPT = """Here are summaries of consecutive parts of {document}:
+
+{summaries}
+
+Combine them into one shorter list of bullet points covering the same ground, in order, keeping important names, numbers and dates. Write only the bullet points."""
+
 # System prompt, sent first in every conversation
 SYSTEM_PROMPT = """You are a helpful AI assistant running locally on the user's computer. Give clear, accurate and concise answers. When a question comes with excerpts from the user's documents, base your answer on them and cite the file names (and pages, when given); if they don't contain the answer, say so before answering from general knowledge."""
 
