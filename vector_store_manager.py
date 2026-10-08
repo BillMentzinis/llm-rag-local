@@ -345,6 +345,21 @@ class VectorStoreManager:
             return None
         return results["metadatas"][0]
 
+    def get_document_chunks(self, filename: str) -> List[Dict]:
+        """
+        Get all of a document's chunks, in order.
+
+        Args:
+            filename: Name of the document
+
+        Returns:
+            List of {"text", "metadata"} dictionaries (empty if the document isn't indexed)
+        """
+        results = self.collection.get(where={"filename": filename}, include=["documents", "metadatas"])
+        chunks = [{"text": text, "metadata": metadata}
+                  for text, metadata in zip(results["documents"], results["metadatas"])]
+        return sorted(chunks, key=lambda c: c["metadata"].get("chunk_index", 0))
+
     def get_document_info(self, filename: str) -> Optional[Dict]:
         """
         Get information about a specific document.

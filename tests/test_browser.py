@@ -283,6 +283,28 @@ def test_documents_page(browser, ollama, launch_app, tmp_path):
     page.get_by_placeholder("Ask me anything...").wait_for(timeout=30000)
     expect(messages(page).nth(1)).to_contain_text("A summary.", timeout=30000)
     assert "Summarize cats.txt" in messages(page).nth(0).inner_text()
+    page.get_by_text("Summary of all of cats.txt").wait_for(timeout=10000)
+    assert "full text of cats.txt" in ollama.requests[-1]["messages"][-1]["content"]
+
+
+def test_a_long_documents_summary_shows_progress_and_can_be_stopped(browser, ollama, launch_app, tmp_path):
+    # About 5,000 tokens: read in parts
+    text = "\n\n".join(f"Section {i}. " + " ".join(f"detail{i}x{j}" for j in range(80)) for i in range(20))
+    (tmp_path / "long.txt").write_text(text)
+    page = open_page(browser, launch_app(ollama.url))
+
+    page.get_by_role("link", name=re.compile("Documents")).first.click()
+    page.get_by_role("heading", name="Documents").wait_for(timeout=10000)
+    page.locator('input[type="file"]').set_input_files([str(tmp_path / "long.txt")])
+    page.get_by_role("button", name=re.compile("Process documents")).click()
+    page.get_by_text("Processed long.txt").wait_for(timeout=30000)
+    page.get_by_role("button", name=re.compile("Summarize")).click()
+
+    page.get_by_text(re.compile(r"Reading part 1 of \d")).wait_for(timeout=30000)
+    page.get_by_role("button", name="Stop generating").click()
+    page.get_by_text("Stopped before the answer was complete.").wait_for(timeout=10000)
+    assert ollama.disconnected.wait(timeout=10)  # the model was told to stop
+    assert len(ollama.requests) == 1 and "Here is part 1 of" in ollama.requests[0]["messages"][-1]["content"]
 
 
 def test_saved_chats(browser, ollama, launch_app):

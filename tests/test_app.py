@@ -210,3 +210,23 @@ def test_chats_with_the_same_first_question_are_saved_separately(fake):
 
     chats = {c["name"]: c["message_count"] for c in chat_manager.list_chats()}
     assert chats == {"hello": 2, "hello (2)": 4}
+
+
+def test_a_summary_request_summarizes_the_whole_document_and_regenerates_as_one(fake):
+    upload([("cats.txt", CATS), ("dogs.txt", DOGS)])
+    at = start_app()
+    # As the Documents page's Summarize button leaves it
+    at.session_state["messages"] = [{"role": "user", "content": "Summarize dogs.txt", "summarize": "dogs.txt"}]
+    at.session_state["summary_requested"] = True
+    at.run()
+    assert not at.exception, at.exception
+
+    prompt = fake.requests[-1]["messages"][-1]["content"]
+    assert "full text of dogs.txt" in prompt and DOGS.decode() in prompt and CATS.decode() not in prompt
+    summary = at.session_state["messages"][-1]
+    assert summary["content"] == "An answer." and summary["summary_of"] == "dogs.txt"
+    assert any("Summary of all of dogs.txt" in c.value for c in at.caption)
+
+    at.button(key="regenerate").click().run()
+    assert len(fake.requests) == 2 and fake.requests[-1]["messages"] == fake.requests[-2]["messages"]
+    assert at.session_state["messages"][-1]["summary_of"] == "dogs.txt"
