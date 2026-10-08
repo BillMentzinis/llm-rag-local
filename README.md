@@ -10,7 +10,7 @@ A local Retrieval-Augmented Generation (RAG) chat application with a Streamlit U
 
 ## Quick Start
 
-There are two ways to run the model. Pick one; you can switch between them from the sidebar at any time.
+There are two ways to run the model. Pick one; you can switch between them from the sidebar at any time. Or run the app and Ollama together in Docker (Option C).
 
 ### Option A: Ollama (any computer)
 
@@ -48,7 +48,30 @@ LLM weights are downloaded from Hugging Face on first use and cached at `~/.cach
 
 > **Note:** Models gated on Hugging Face (e.g. Llama) require an account with access. Log in with `huggingface-cli login` before starting.
 
-Either way, the app opens at `http://localhost:8501`. Run it from the repository folder so Streamlit picks up the theme in `.streamlit/config.toml`. On first run it downloads the embedding model (~90 MB).
+### Option C: Docker (app and Ollama together)
+
+Needs only [Docker](https://docs.docker.com/get-docker/) with Compose. The image runs the app on CPU with the embedding model included; Ollama runs the LLM in its own container.
+
+```bash
+docker compose up -d                                   # builds the app's image the first time (a few minutes)
+docker compose exec ollama ollama pull llama3.1:8b     # download a model into Ollama
+```
+
+Open `http://localhost:8501`. Documents, chats and Ollama's models are kept in Docker volumes, so they survive restarts and rebuilds; `docker compose down` stops everything (add `-v` to delete the volumes too).
+
+- **NVIDIA GPU for Ollama:** uncomment the `deploy:` block in `docker-compose.yml` (needs the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)). Without it, models run on the CPU, which is much slower.
+- **Ollama already installed on this computer:** run just the app and point it there. On Linux, Ollama must listen beyond localhost (set `OLLAMA_HOST=0.0.0.0` for the Ollama service).
+  ```bash
+  docker build -t llm-rag-local .
+  docker run -d -p 127.0.0.1:8501:8501 -v llm-rag-data:/data \
+    -e OLLAMA_HOST=http://host.docker.internal:11434 --add-host host.docker.internal:host-gateway llm-rag-local
+  ```
+- **Other people on your network:** the app has no login, so it's only reachable from this computer by default. To open it up, change `127.0.0.1:8501:8501` to `8501:8501` in `docker-compose.yml`.
+- **Another model at startup:** `LLM_MODEL=ollama:qwen2.5:7b docker compose up -d`. Any model Ollama has can also be picked in the sidebar.
+
+The Docker image doesn't run Hugging Face models (they need CUDA inside the container); use Option B for those.
+
+With Option A or B, the app opens at `http://localhost:8501`. Run it from the repository folder so Streamlit picks up the theme in `.streamlit/config.toml`. On first run it downloads the embedding model (~90 MB).
 
 To stop the app, press `Ctrl+C` in the terminal running it.
 
@@ -112,8 +135,10 @@ llm-rag-local/
 ├── requirements-dev.txt    # Extra tools for the browser tests
 ├── pytest.ini              # Test settings (the `browser` marker)
 ├── tests/                  # pytest suite (runs offline, no GPU needed)
-├── .github/workflows/      # CI: tests on Linux, Windows and macOS, and the retrieval evaluation
+├── .github/workflows/      # CI: tests on Linux, Windows and macOS, the retrieval evaluation, and the Docker image
 ├── docs/                   # README screenshot
+├── Dockerfile              # The app's image (CPU, Ollama backend)
+├── docker-compose.yml      # The app and Ollama together
 ├── examples/eval/          # Example documents and questions for evaluate_retrieval.py
 ├── LICENSE                 # MIT
 ├── chats/                  # Saved chat sessions (auto-created, gitignored)
@@ -160,6 +185,7 @@ The Documents page also lists what's indexed, and can **Summarize** a document i
 
 All parameters are in `config.py`:
 
+- **Data folder**: the document index (`chroma_db/`) and saved chats (`chats/`) are kept next to the app, or under `DATA_DIR` if that's set (the Docker image uses `/data`)
 - **RAG**: `chunk_size` (200 tokens, overlap included), `chunk_overlap` (30), `top_k` (5), `min_similarity` (0.2, cosine similarity; chosen with the [retrieval evaluation](#evaluating-retrieval)). The embedding model only reads the first 256 tokens of a chunk, so keep `chunk_size` below that if you raise it.
 - **Generation**: `temperature` (0.7), `top_p` (0.9), `max_new_tokens` (512); the sidebar's sliders override temperature and max tokens
 - **Conversation**: `SYSTEM_PROMPT` (sent first in every conversation) and `CHAT_CONFIG`: `history_turns` (3 earlier question/answer pairs sent with each question) and `rag_context_tokens` (2048, the most tokens of document excerpts per question). If a prompt won't fit the model's context window, the oldest turns are dropped first, then the least relevant excerpts; the question itself is always sent

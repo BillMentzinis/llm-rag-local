@@ -1,0 +1,22 @@
+# Kept out of the image: your data, tests and anything that isn't the app
+.git
+.github
+.venv
+venv
+__pycache__/
+*.pyc
+.pytest_cache/
+chroma_db/
+chats/
+test_docs/
+old/
+tests/
+docs/
+.env
+.streamlit/secrets.toml
+*.egg-info/
+dist/
+build/
+Dockerfile
+docker-compose.yml
+.dockerignore
