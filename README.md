@@ -158,7 +158,7 @@ The Documents page also lists what's indexed, and can **Summarize** a document i
 
 All parameters are in `config.py`:
 
-- **RAG**: `chunk_size` (200 tokens, overlap included), `chunk_overlap` (30), `top_k` (5), `min_similarity` (0.3, cosine similarity). The embedding model only reads the first 256 tokens of a chunk, so keep `chunk_size` below that if you raise it.
+- **RAG**: `chunk_size` (200 tokens, overlap included), `chunk_overlap` (30), `top_k` (5), `min_similarity` (0.2, cosine similarity; chosen with the [retrieval evaluation](#evaluating-retrieval)). The embedding model only reads the first 256 tokens of a chunk, so keep `chunk_size` below that if you raise it.
 - **Generation**: `temperature` (0.7), `top_p` (0.9), `max_new_tokens` (512); the sidebar's sliders override temperature and max tokens
 - **Conversation**: `SYSTEM_PROMPT` (sent first in every conversation) and `CHAT_CONFIG`: `history_turns` (3 earlier question/answer pairs sent with each question) and `rag_context_tokens` (2048, the most tokens of document excerpts per question). If a prompt won't fit the model's context window, the oldest turns are dropped first, then the least relevant excerpts; the question itself is always sent
 - **Models**: `DEFAULT_MODEL` (the model used on first launch; override with the `LLM_MODEL` environment variable, e.g. `ollama:llama3.1:8b` or `transformers:meta-llama/Llama-3.1-8B-Instruct`), `OLLAMA_CONFIG` (server address, overridable with `OLLAMA_HOST`; and the context window requested from Ollama, 8192 tokens by default, overridable with `OLLAMA_NUM_CTX` — larger windows use more memory), and `AVAILABLE_MODELS` (the Hugging Face models offered — add or remove models here)
@@ -193,7 +193,7 @@ All tests run offline, without a GPU, Ollama or model downloads: they use a smal
 python evaluate_retrieval.py run examples/eval/questions.json
 ```
 
-The example set is 22 questions about four small documents in `examples/eval/`. To evaluate with your own documents, put them in a folder (`test_docs/` is gitignored) with a `questions.json` next to them:
+The example set is 22 questions about four small documents in `examples/eval/`, plus 8 they can't answer. To evaluate with your own documents, put them in a folder (`test_docs/` is gitignored) with a `questions.json` next to them:
 
 ```json
 {"questions": [
@@ -204,6 +204,8 @@ The example set is 22 questions about four small documents in `examples/eval/`. 
 ```
 
 `quote` is text copied from the document that answers the question; case, punctuation and line breaks don't matter. Ask questions the way you would in the chat, in your own words rather than the document's, since that's what the search has to cope with.
+
+You can also list questions your documents *can't* answer, under `"unanswerable": ["What's the capital of Peru?", ...]`. The report then shows whether the app would still pass excerpts to the model for them, and compares similarity thresholds from 0.00 to 0.50: how many real answers each keeps, and how many unanswerable questions still get excerpts. That's the data for choosing `min_similarity`.
 
 To get started faster, let your model draft the questions, then review them (fix or delete the weak ones, add your own) and rename the file to `questions.json`:
 

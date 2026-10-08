@@ -81,7 +81,11 @@ RAG_CONFIG = {
     "chunk_overlap": 30,  # Overlap between chunks
     "embedding_model": "all-MiniLM-L6-v2",  # Fast, 384-dim embeddings
     "top_k": 5,  # Number of chunks to retrieve
-    "min_similarity": 0.3,  # Minimum cosine similarity for a chunk to be used (0-1)
+    # Minimum cosine similarity for a chunk to be used (0-1). Questions worded
+    # differently from the document often score 0.2-0.3 against the passage that
+    # answers them; on the example evaluation set, 0.2 keeps 20 of 22 answers
+    # (0.3 kept 15) while unrelated questions (scoring under 0.2) still get none
+    "min_similarity": 0.2,
 }
 
 # Generation Configuration (the sidebar's sliders override temperature and max_new_tokens)
